@@ -1,0 +1,45 @@
+# tollgate-android — native Android port of the TollGate client.
+#
+# Goal (kanban t_e8a0c51f): replace the JS captive-portal TollGate client with a
+# fully-native Android app — a Rust core (`tollgate-mobile`, exposed to Kotlin
+# via UniFFI) + a Jetpack Compose UI shell. The Rust core speaks the TollGate v2
+# CBOR protocol by reusing the `tollgate-rs` wire types (`tollgate-protocol`) and
+# porting the client logic that today lives inside the `tollgate-net` binary's
+# `client.rs` (detect / pay / consume). Architecture is modelled on
+# `fips-android` (Michael Malmi's native FIPS Android app): Rust + UniFFI +
+# cargo-ndk + Gradle. Tauri is deliberately skipped.
+#
+# Build deps are pinned to the same versions/revs as `tollgate-rs` so a shared
+# CARGO_TARGET_DIR reuses its compiled artifact cache (cold tokio/reqwest/cashu
+# builds are expensive). Set:
+#   export CARGO_TARGET_DIR=/home/c03rad0r/repos/tollgate-rs/target
+# before `cargo test`/`cargo build` to warm the dep cache.
+[workspace]
+resolver = "2"
+members = ["tollgate-mobile"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/OpenTollGate/tollgate-rs"
+authors = ["TollGate contributors"]
+
+[workspace.dependencies]
+# Real wire types / product-id maths from tollgate-rs (path deps, absolute — the
+# kanban workspace is nested deep under ~/.hermes, so relative paths are brittle).
+tollgate-protocol = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-protocol" }
+tollgate-core = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-core" }
+# Matched to tollgate-rs workspace for cache warmth.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "io-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+anyhow = "1"
+thiserror = "2"
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Same git rev as tollgate-rs (cashubtc/cdk) — reuse compiled cache.
+cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cashu", default-features = false, features = ["mint"] }
+secp256k1 = { version = "0.30", features = ["rand", "global-context"] }
+tracing = "0.1"
+uniffi = "0.28"

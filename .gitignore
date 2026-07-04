@@ -1,0 +1,14 @@
+/target
+**/target/
+**/*.so
+**/*.aar
+**/build/
+**/.gradle/
+**/local.properties
+*.apk
+*.aab
+*.dex
+*.iml
+.idea/
+.DS_Store
+android/app/src/main/jniLibs/**/*.so

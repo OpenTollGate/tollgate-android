@@ -1,0 +1,33 @@
+[package]
+name = "tollgate-mobile"
+description = "Native Android TollGate client — Rust core exposed to Kotlin via UniFFI. Ports the JS captive-portal client to a fully-native app speaking the TollGate v2 CBOR protocol."
+version.workspace = true
+edition = "2021"
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+name = "tollgate_mobile"
+
+[dependencies]
+tollgate-protocol = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+cashu = { workspace = true }
+secp256k1 = { workspace = true }
+tracing = { workspace = true }
+uniffi = { workspace = true }
+
+[dev-dependencies]
+# In-process mock gateway for the integration test — same axum the real
+# tollgate-net server uses, speaking the real CBOR protocol end to end.
+axum = { version = "0.8", features = ["ws"] }
+tower = { version = "0.5", features = ["util"] }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread", "macros"] }
+tollgate-protocol = { workspace = true }
