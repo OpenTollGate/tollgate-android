@@ -13,6 +13,10 @@
 .DS_Store
 android/app/src/main/jniLibs/**/*.so
 
+# UniFFI-generated Kotlin bindings — produced by `just bindings` from the .so.
+# Never hand-edit; regenerated on every build.
+android/app/src/main/kotlin/uniffi/
+
 # Reference checkouts — local clones we read/build but never ship
 # (FIPS path dependency; mirrors Myco's reference/ layout).
 reference/fips
