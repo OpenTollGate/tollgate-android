@@ -5,9 +5,11 @@ const val DEFAULT_MINT: String = "https://mint.minibits.cash"
 
 /**
  * UI state for the TollGate dashboard. Mirrors the JS captive-portal SPA's
- * Status / Cashu / Balance / Lightning views. Phase 1 splits it across two
+ * Status / Cashu / Balance / Lightning views. Phase 1 splits it across three
  * Compose screens — [PayScreen][org.opentollgate.android.PayScreen] (the
- * payment flow) and StatusScreen (live session telemetry) — driven by a single
+ * payment flow), StatusScreen (live session telemetry), and
+ * [WalletScreen][org.opentollgate.android.WalletScreen] (balance, mints, token
+ * history) — driven by a single
  * [TollgateViewModel][org.opentollgate.android.TollgateViewModel].
  */
 data class UiState(
@@ -32,6 +34,11 @@ data class UiState(
      *  display on StatusScreen. Set on the first accepted bootstrap; cleared
      *  when the poll loop ends (stop / max_polls / error). */
     val sessionStartedAt: Long? = null,
+    /**
+     *  Local Cashu wallet snapshot — per-mint balances + transaction ledger.
+     *  Driven by WalletScreen (receive/send); real Cashu mint integration is
+     *  Phase 3 (see [WalletState]). */
+    val wallet: WalletState = WalletState(),
     val error: String? = null,
 )
 

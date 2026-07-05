@@ -2,6 +2,7 @@ package org.opentollgate.android
 
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Icon
@@ -23,15 +24,15 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 
 /**
- * Top-level TollGate scaffold: a two-destination [NavHost] (Pay + Status) with a
- * Material3 bottom navigation bar, wrapped in a dark [MaterialTheme] (the
- * captive-portal SPA is dark-themed). This is the single root composable
- * [MainActivity] renders.
+ * Top-level TollGate scaffold: a three-destination [NavHost] (Pay + Wallet +
+ * Status) with a Material3 bottom navigation bar, wrapped in a dark
+ * [MaterialTheme] (the captive-portal SPA is dark-themed). This is the single
+ * root composable [MainActivity] renders.
  *
- * The master plan's full set of screens (Wallet, Discover, Pair, Settings) slot
- * in here as additional [composable] destinations in later Phase 1 tasks; for
- * now Pay (the bootstrap-token flow) and Status (live session telemetry) cover
- * the end-to-end client loop.
+ * The master plan's full set of screens (Discover, Pair, Settings) slot in here
+ * as additional [composable] destinations in later Phase 1 tasks; for now Pay
+ * (the bootstrap-token flow), Wallet (balance / mints / token history) and
+ * Status (live session telemetry) cover the client loop + the wallet UX.
  */
 @Composable
 fun TollGateApp(vm: TollgateViewModel) {
@@ -39,6 +40,7 @@ fun TollGateApp(vm: TollgateViewModel) {
     val nav = rememberNavController()
     val destinations = listOf(
         TopDestination("pay", "Pay", Icons.Default.Send),
+        TopDestination("wallet", "Wallet", Icons.Default.AccountBalanceWallet),
         TopDestination("status", "Status", Icons.Default.Home),
     )
 
@@ -86,6 +88,14 @@ fun TollGateApp(vm: TollgateViewModel) {
                         // match PayScreen's `() -> Unit`. Invoking vm.onPay() here
                         // supplies the default (state.amountSat).
                         onPay = { vm.onPay() },
+                    )
+                }
+                composable("wallet") {
+                    WalletScreen(
+                        state = state,
+                        onReceiveToken = vm::onReceiveToken,
+                        onSend = vm::onSend,
+                        onDismissLastSent = vm::onDismissLastSent,
                     )
                 }
                 composable("status") {
