@@ -12,6 +12,8 @@ name = "tollgate_mobile"
 
 [dependencies]
 tollgate-protocol = { workspace = true }
+# FIPS path dep — wired in Phase 0, exercised by the embedded node in Phase 2.
+fips = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }

@@ -30,6 +30,13 @@ authors = ["TollGate contributors"]
 # kanban workspace is nested deep under ~/.hermes, so relative paths are brittle).
 tollgate-protocol = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-protocol" }
 tollgate-core = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-core" }
+# FIPS mesh protocol — LOCAL checkout under reference/fips (gitignored), wired as
+# a path dependency exactly like Myco (Origami74/myco). Clone with:
+#   git clone --depth 1 https://github.com/k0sti/fips.git reference/fips
+# default-features = false matches Myco's mobile-first stance (app owns any TUN).
+# NB: upstream fips currently has no [features] table, so this is a no-op today
+# but stays correct/forward-compatible if desktop-only features land upstream.
+fips = { path = "reference/fips", default-features = false }
 # Matched to tollgate-rs workspace for cache warmth.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

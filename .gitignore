@@ -12,3 +12,7 @@
 .idea/
 .DS_Store
 android/app/src/main/jniLibs/**/*.so
+
+# Reference checkouts — local clones we read/build but never ship
+# (FIPS path dependency; mirrors Myco's reference/ layout).
+reference/fips
