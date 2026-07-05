@@ -20,6 +20,11 @@ import uniffi.tollgate_mobile.TollgateMobileNode
  * own tokio runtime + persisted identity (under filesDir), so all calls here are
  * synchronous FFI calls dispatched off the main thread via [viewModelScope].
  *
+ * Session lifetime: [onPay] pays the bootstrap; on acceptance it calls
+ * [startConsume], which records [UiState.sessionStartedAt] and then polls
+ * [TollgateMobileNode.pollEvent] until the loop ends (stop / max_polls) — at
+ * which point [UiState.sessionStartedAt] is cleared via a finally block.
+ *
  * PENDING (ARCHITECTURE.md §6): the full SPA-mirror UI (Cashu mint/balance,
  * Lightning, QR scan, i18n) is built once the source-of-truth decision lands.
  * The detect/pay/consume plumbing below is already wired end to end.
@@ -57,35 +62,62 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             .onFailure { e -> _state.update { it.copy(error = e.message ?: "pay failed") } }
     }
 
+    /**
+     * Launch the background stay-online loop and record the session start time.
+     * Wrapped in runCatching so a UniFFI-thrown TollgateError (e.g. "a consume
+     * loop is already running") surfaces as [UiState.error] instead of crashing
+     * the launched coroutine. The poll loop clears [UiState.sessionStartedAt] in
+     * a finally block when it exits, so the uptime display always reflects the
+     * real session state.
+     */
     private fun startConsume() {
         val s = state.value
-        node.startConsume(
-            base = s.baseHost,
-            mint = s.mintUrl,
-            amountSat = 21u,
-            topupSat = 5u,
-            intervalMs = 5000u,
-            maxPolls = null,
-        )
-        viewModelScope.launch(Dispatchers.IO) {
-            while (true) {
-                val ev = node.pollEvent(5000u) ?: break
-                _state.update {
-                    it.copy(
-                        latest = ConsumeEventView(
-                            poll = ev.poll,
-                            remainingScaled = ev.remainingScaled,
-                            delivered = ev.report?.delivered,
-                            cutOff = ev.cutOff,
-                            toppedUp = ev.toppedUp,
-                        )
-                    )
+        runCatching {
+            // UniFFI 0.28 maps u64 → ULong, u32 → UInt, u8 → UByte. The literal
+            // suffixes (uL/u) must match each parameter's FFI type exactly.
+            node.startConsume(
+                base = s.baseHost,
+                mint = s.mintUrl,
+                amountSat = 21uL,
+                topupSat = 5uL,
+                intervalMs = 5000uL,
+                maxPolls = null,
+            )
+        }.onSuccess {
+            val startedAt = System.currentTimeMillis()
+            _state.update { it.copy(sessionStartedAt = startedAt, error = null) }
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    while (true) {
+                        // pollEvent(timeoutMs: ULong) — returns null when the
+                        // loop finished and the event queue is drained.
+                        val ev = node.pollEvent(5000uL) ?: break
+                        _state.update {
+                            it.copy(
+                                latest = ConsumeEventView(
+                                    poll = ev.poll,
+                                    remainingScaled = ev.remainingScaled,
+                                    // ev.report?.delivered is ULong? (Rust u64);
+                                    // down-cast to Long for the View (Long max ≈ 9 EB).
+                                    delivered = ev.report?.delivered?.toLong(),
+                                    cutOff = ev.cutOff,
+                                    toppedUp = ev.toppedUp,
+                                )
+                            )
+                        }
+                    }
+                } finally {
+                    // Loop ended (stop_consume, max_polls, or thrown) → session over.
+                    _state.update { it.copy(sessionStartedAt = null) }
                 }
             }
+        }.onFailure { e ->
+            _state.update { it.copy(error = e.message ?: "start_consume failed") }
         }
     }
 
     fun onStop() {
         runCatching { node.stopConsume() }
+        _state.update { it.copy(sessionStartedAt = null) }
     }
 }

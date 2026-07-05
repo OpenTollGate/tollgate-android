@@ -11,6 +11,11 @@ data class UiState(
     val paid: PaidView? = null,
     val latest: ConsumeEventView? = null,
     val online: Boolean = false,
+    /** Wall-clock millis (System.currentTimeMillis) of the current consume
+     *  session's start, or null when not consuming. Drives the live uptime
+     *  display on StatusScreen. Set on the first accepted bootstrap; cleared
+     *  when the poll loop ends (stop / max_polls / error). */
+    val sessionStartedAt: Long? = null,
     val error: String? = null,
 )
 

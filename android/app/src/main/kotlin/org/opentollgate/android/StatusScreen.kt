@@ -1,53 +1,247 @@
 package org.opentollgate.android
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import org.opentollgate.android.model.UiState
+import org.opentollgate.android.util.formatBytes
+import org.opentollgate.android.util.formatDurationMillis
+import org.opentollgate.android.util.shortPubkey
 
+/**
+ * Phase 1 status dashboard. Shows, top to bottom:
+ *  1. FIPS node status — ONLINE/OFFLINE with the connected gateway pubkey;
+ *  2. Session telemetry — live-ticking uptime + cumulative data consumed;
+ *  3. The gateway's price sheet (when known);
+ *  4. The last pollEvent() detail (remaining balance, cut-off / top-up badges);
+ *  5. Any error;
+ *  6. Secondary controls (detect / pay / stop) — kept here until PayScreen and
+ *     SettingsScreen land in a later Phase 1 task.
+ *
+ * [state] is driven by [TollgateViewModel], whose consume loop polls
+ * `TollgateMobileNode.pollEvent()` and updates [UiState.latest] + the
+ * [UiState.sessionStartedAt] that the live uptime display reads.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StatusScreen(state: UiState, onDetect: () -> Unit, onPay: () -> Unit) {
-    Scaffold(topBar = { TopAppBar(title = { Text("TollGate") }) }) { pad ->
+fun StatusScreen(
+    state: UiState,
+    onDetect: () -> Unit,
+    onPay: () -> Unit,
+    onStop: () -> Unit,
+) {
+    Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Status") }) }) { pad ->
         Column(
             Modifier
                 .fillMaxSize()
                 .padding(pad)
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("node: ${state.ourPubkey.take(18)}…", style = MaterialTheme.typography.bodySmall)
+            StatusHero(online = state.online, gatewayPubkey = gatewayPubkey(state))
 
-            // TODO(§6): full SPA-mirror UI — Cashu mint/balance, Lightning, QR,
-            // i18n, tip selection. This skeleton wires detect/pay/consume only.
-            Button(onClick = onDetect, enabled = !state.online) { Text("Detect gateway") }
-            state.detected?.let {
-                Text("peer: ${it.pubkeyHex.take(18)}…  unit=${it.unit}  v${it.version}")
-                Text("price: ${it.perUnit ?: "?"} per unit / ${it.perSecond ?: "?"} per s")
+            SessionCard(state = state)
+
+            state.detected?.let { d ->
+                if (d.perUnit != null || d.perSecond != null) {
+                    InfoCard(title = "Price") {
+                        TelemetryRow(label = "per unit", value = d.perUnit?.toString() ?: "—")
+                        TelemetryRow(label = "per second", value = d.perSecond?.toString() ?: "—")
+                        TelemetryRow(label = "unit", value = d.unit)
+                    }
+                }
             }
-            Button(onClick = onPay) { Text("Pay 21 sat (bootstrap)") }
-            state.paid?.let { Text(if (it.accepted) "accepted ✓" else "rejected", color = if (it.accepted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
-            state.latest?.let {
-                Spacer(Modifier.height(8.dp))
-                Text("poll ${it.poll}: remaining=${it.remainingScaled} delivered=${it.delivered ?: "-"}" +
-                    if (it.toppedUp) " [topped up]" else "" + if (it.cutOff) " [CUT OFF]" else "")
+
+            state.latest?.let { ev ->
+                InfoCard(title = "Last poll · #${ev.poll}") {
+                    TelemetryRow(label = "remaining", value = ev.remainingScaled.toString())
+                    ev.delivered?.let {
+                        TelemetryRow(label = "delivered", value = formatBytes(it))
+                    }
+                    when {
+                        ev.cutOff -> Text(
+                            "⚠ balance cut off — topping up",
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        ev.toppedUp -> Text(
+                            "topped up ✓",
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
             }
+
             state.error?.let { Text("error: $it", color = MaterialTheme.colorScheme.error) }
+
+            Spacer(Modifier.height(4.dp))
+            Controls(state = state, onDetect = onDetect, onPay = onPay, onStop = onStop)
         }
+    }
+}
+
+/** Prefer the confirmed peer pubkey from a paid session; fall back to detected. */
+private fun gatewayPubkey(state: UiState): String? =
+    state.paid?.peerPubkeyHex?.takeIf { it.isNotBlank() }
+        ?: state.detected?.pubkeyHex?.takeIf { it.isNotBlank() }
+
+@Composable
+private fun StatusHero(online: Boolean, gatewayPubkey: String?) {
+    val (dotColor, label) = if (online) {
+        MaterialTheme.colorScheme.primary to "ONLINE"
+    } else {
+        MaterialTheme.colorScheme.outline to "OFFLINE"
+    }
+    InfoCard(title = "FIPS node") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(12.dp)
+                    .clip(CircleShape)
+                    .background(dotColor),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "connected gateway",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            gatewayPubkey?.let { shortPubkey(it) } ?: "not connected",
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodyLarge,
+        )
+    }
+}
+
+@Composable
+private fun SessionCard(state: UiState) {
+    val startedAt = state.sessionStartedAt
+    // Re-tick once a second while a session is active so the uptime clock moves
+    // between polls (the consume loop only emits a pollEvent every ~5s).
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(startedAt) {
+        if (startedAt != null) {
+            while (true) {
+                now = System.currentTimeMillis()
+                delay(1000)
+            }
+        }
+    }
+    val uptime = startedAt?.let { (now - it).coerceAtLeast(0L) }
+    val dataBytes = state.latest?.delivered
+    val active = startedAt != null
+
+    InfoCard(title = "Session") {
+        TelemetryRow(label = "status", value = if (active) "active" else "idle")
+        TelemetryRow(label = "uptime", value = uptime?.let { formatDurationMillis(it) } ?: "—")
+        TelemetryRow(label = "data consumed", value = dataBytes?.let { formatBytes(it) } ?: "—")
+    }
+}
+
+@Composable
+private fun Controls(state: UiState, onDetect: () -> Unit, onPay: () -> Unit, onStop: () -> Unit) {
+    val active = state.sessionStartedAt != null
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = onDetect,
+            enabled = !state.online,
+            modifier = Modifier.weight(1f),
+        ) { Text("Detect") }
+        Button(
+            onClick = onPay,
+            enabled = !active,
+            modifier = Modifier.weight(1f),
+        ) { Text("Pay 21") }
+        OutlinedButton(
+            onClick = onStop,
+            enabled = active,
+            modifier = Modifier.weight(1f),
+        ) { Text("Stop") }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            "host  ${state.baseHost}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        Text(
+            "mint  ${state.mintUrl}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        Text(
+            "self  ${shortPubkey(state.ourPubkey)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+            fontFamily = FontFamily.Monospace,
+        )
+    }
+}
+
+/** A labelled surface with a small caps title. */
+@Composable
+private fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Spacer(Modifier.height(8.dp))
+            content()
+        }
+    }
+}
+
+/** A label/value row spaced to the edges of the card. */
+@Composable
+private fun TelemetryRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label)
+        Text(value, fontWeight = FontWeight.Medium)
     }
 }

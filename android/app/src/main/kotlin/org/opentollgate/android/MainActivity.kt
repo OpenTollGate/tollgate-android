@@ -13,7 +13,7 @@ class MainActivity : ComponentActivity() {
         val vm by viewModels<TollgateViewModel>()
         setContent {
             val state by vm.state.collectAsState()
-            StatusScreen(state = state, onDetect = vm::onDetect, onPay = vm::onPay)
+            StatusScreen(state = state, onDetect = vm::onDetect, onPay = vm::onPay, onStop = vm::onStop)
         }
     }
 }
