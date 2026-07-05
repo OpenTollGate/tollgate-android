@@ -16,7 +16,7 @@
 # before `cargo test`/`cargo build` to warm the dep cache.
 [workspace]
 resolver = "2"
-members = ["tollgate-mobile"]
+members = ["tollgate-mobile", "uniffi-bindgen"]
 
 [workspace.package]
 version = "0.1.0"

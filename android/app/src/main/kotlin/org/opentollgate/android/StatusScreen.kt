@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,9 +15,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -44,25 +40,24 @@ import org.opentollgate.android.util.formatDurationMillis
 import org.opentollgate.android.util.shortPubkey
 
 /**
- * Phase 1 status dashboard. Shows, top to bottom:
+ * Phase 1 session dashboard. Shows, top to bottom:
  *  1. FIPS node status — ONLINE/OFFLINE with the connected gateway pubkey;
  *  2. Session telemetry — live-ticking uptime + cumulative data consumed;
  *  3. The gateway's price sheet (when known);
  *  4. The last pollEvent() detail (remaining balance, cut-off / top-up badges);
  *  5. Any error;
- *  6. Secondary controls (detect / pay / stop) — kept here until PayScreen and
- *     SettingsScreen land in a later Phase 1 task.
+ *  6. Stop-session control.
  *
- * [state] is driven by [TollgateViewModel], whose consume loop polls
- * `TollgateMobileNode.pollEvent()` and updates [UiState.latest] + the
- * [UiState.sessionStartedAt] that the live uptime display reads.
+ * The detect/pay controls that used to live here moved to [PayScreen]; this
+ * screen is now read-only session monitoring (plus Stop). [state] is driven by
+ * [TollgateViewModel], whose consume loop polls `TollgateMobileNode.pollEvent()`
+ * and updates [UiState.latest] + the [UiState.sessionStartedAt] that the live
+ * uptime display reads.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StatusScreen(
     state: UiState,
-    onDetect: () -> Unit,
-    onPay: () -> Unit,
     onStop: () -> Unit,
 ) {
     Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Status") }) }) { pad ->
@@ -110,7 +105,7 @@ fun StatusScreen(
             state.error?.let { Text("error: $it", color = MaterialTheme.colorScheme.error) }
 
             Spacer(Modifier.height(4.dp))
-            Controls(state = state, onDetect = onDetect, onPay = onPay, onStop = onStop)
+            Controls(state = state, onStop = onStop)
         }
     }
 }
@@ -179,25 +174,13 @@ private fun SessionCard(state: UiState) {
 }
 
 @Composable
-private fun Controls(state: UiState, onDetect: () -> Unit, onPay: () -> Unit, onStop: () -> Unit) {
+private fun Controls(state: UiState, onStop: () -> Unit) {
     val active = state.sessionStartedAt != null
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(
-            onClick = onDetect,
-            enabled = !state.online,
-            modifier = Modifier.weight(1f),
-        ) { Text("Detect") }
-        Button(
-            onClick = onPay,
-            enabled = !active,
-            modifier = Modifier.weight(1f),
-        ) { Text("Pay 21") }
-        OutlinedButton(
-            onClick = onStop,
-            enabled = active,
-            modifier = Modifier.weight(1f),
-        ) { Text("Stop") }
-    }
+    OutlinedButton(
+        onClick = onStop,
+        enabled = active,
+        modifier = Modifier.fillMaxWidth(),
+    ) { Text("Stop session") }
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             "host  ${state.baseHost}",
@@ -215,33 +198,5 @@ private fun Controls(state: UiState, onDetect: () -> Unit, onPay: () -> Unit, on
             color = MaterialTheme.colorScheme.outline,
             fontFamily = FontFamily.Monospace,
         )
-    }
-}
-
-/** A labelled surface with a small caps title. */
-@Composable
-private fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            Spacer(Modifier.height(8.dp))
-            content()
-        }
-    }
-}
-
-/** A label/value row spaced to the edges of the card. */
-@Composable
-private fun TelemetryRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label)
-        Text(value, fontWeight = FontWeight.Medium)
     }
 }

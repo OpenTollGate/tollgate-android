@@ -38,6 +38,30 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     fun onHostChange(host: String) = _state.update { it.copy(baseHost = host) }
     fun onMintChange(mint: String) = _state.update { it.copy(mintUrl = mint) }
 
+    /** Set the bootstrap-token amount (sats). Clamped to ≥ 1. */
+    fun onAmountChange(sat: Long) = _state.update { it.copy(amountSat = sat.coerceAtLeast(1L)) }
+
+    /** Select an already-known mint as the active one (radio select on PayScreen). */
+    fun onSelectMint(mint: String) = _state.update {
+        if (mint == it.mintUrl) it else it.copy(mintUrl = mint)
+    }
+
+    /**
+     * Add a user-entered mint URL to [UiState.knownMints] and select it.
+     * Deduped; trailing slash and whitespace stripped. No URL-shape validation
+     * here — the gateway is the arbiter of whether a mint is acceptable, and a
+     * malformed URL surfaces as a [TollgateError.Network] on the next pay().
+     */
+    fun onAddMint(mint: String) {
+        val trimmed = mint.trim().removeSuffix("/")
+        if (trimmed.isEmpty()) return
+        _state.update {
+            val mints = (it.knownMints + trimmed).distinct()
+            it.copy(knownMints = mints, mintUrl = trimmed)
+        }
+    }
+
+
     fun onDetect() = viewModelScope.launch(Dispatchers.IO) {
         _state.update { it.copy(error = null) }
         runCatching { node.detect(state.value.baseHost) }
@@ -52,14 +76,22 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             .onFailure { e -> _state.update { it.copy(error = e.message ?: "detect failed", online = false) } }
     }
 
-    fun onPay(amountSat: Long = 21) = viewModelScope.launch(Dispatchers.IO) {
-        val s = state.value
-        runCatching { node.pay(s.baseHost, s.mintUrl, amountSat.toULong()) }
-            .onSuccess { p ->
-                _state.update { it.copy(paid = PaidView(p.peerPubkeyHex, p.accepted, p.price?.perUnit)) }
-                if (p.accepted) startConsume()
-            }
-            .onFailure { e -> _state.update { it.copy(error = e.message ?: "pay failed") } }
+    fun onPay(amountSat: Long = state.value.amountSat) = viewModelScope.launch(Dispatchers.IO) {
+        // Toggle the in-flight flag so PayScreen can show a spinner and disable
+        // the button. Cleared in `finally` so a thrown TollgateError can never
+        // leave the UI stuck "paying".
+        _state.update { it.copy(paying = true, error = null) }
+        try {
+            val s = state.value
+            runCatching { node.pay(s.baseHost, s.mintUrl, amountSat.toULong()) }
+                .onSuccess { p ->
+                    _state.update { it.copy(paid = PaidView(p.peerPubkeyHex, p.accepted, p.price?.perUnit)) }
+                    if (p.accepted) startConsume()
+                }
+                .onFailure { e -> _state.update { it.copy(error = e.message ?: "pay failed") } }
+        } finally {
+            _state.update { it.copy(paying = false) }
+        }
     }
 
     /**
@@ -73,11 +105,13 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     private fun startConsume() {
         val s = state.value
         runCatching {
-            // UniFFI 0.28 maps u64 → ULong, u32 → UInt, u8 → UByte. The literal
-            // suffixes (uL/u) must match each parameter's FFI type exactly.
+            // UniFFI 0.28 maps u64 -> ULong, u32 -> UInt, u8 -> UByte. The literal
+            // suffixes (uL/u) must match each parameter's FFI type exactly. Param
+            // names are generated from the Rust snake_case (base_url -> baseUrl),
+            // so they must be spelled exactly as the bindings declare them.
             node.startConsume(
-                base = s.baseHost,
-                mint = s.mintUrl,
+                baseUrl = s.baseHost,
+                mintUrl = s.mintUrl,
                 amountSat = 21uL,
                 topupSat = 5uL,
                 intervalMs = 5000uL,

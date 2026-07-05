@@ -55,6 +55,7 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.material3)
     implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.androidx.navigation.compose)
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.lifecycle.runtime.compose)
     // UniFFI's generated ForeignCallback + pointer plumbing uses JNA on the JVM.

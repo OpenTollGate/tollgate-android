@@ -53,3 +53,34 @@ fun formatDurationMillis(ms: Long): String {
  */
 fun shortPubkey(hex: String, prefix: Int = 16): String =
     if (hex.length <= prefix) hex else hex.take(prefix) + "…"
+
+/**
+ * Render a TollGate scaled price as human sats. The wire [PriceView] fields
+ * (`per_second`, `per_unit`) are i64 milli-sats: `actual = scaled / 1000`
+ * (PRICING_SCALE in tollgate-mobile). Examples:
+ *  - 1000 → "1 sat", 500 → "0.5 sat", 10 → "0.01 sat", 0 → "free"
+ *  - null → null (caller hides the row)
+ *
+ * `unit` is the resource unit the gateway delivers (e.g. "byte", "MB"),
+ * taken from Announce. When non-blank it is appended as "sat/<unit>" or
+ * "sat/s" so the price reads naturally ("0.5 sat/s", "0.01 sat/MB").
+ */
+fun formatScaledSats(scaled: Long?, unit: String? = null): String? {
+    if (scaled == null) return null
+    val actual = scaled / 1000.0
+    val per = unit?.takeIf { it.isNotBlank() }?.let { "/$it" }.orEmpty()
+    return when {
+        scaled == 0L -> "free"
+        actual % 1.0 == 0.0 -> "${actual.toInt()} sat$per"
+        else -> {
+            // Trim trailing zeros (0.50 → "0.5") but keep at least one decimal.
+            val s = "%.3f".format(actual).trimEnd('0').trimEnd('.')
+            "$s sat$per"
+        }
+    }
+}
+
+/** Strip the http(s):// scheme from a mint/gateway URL for compact display. */
+fun stripScheme(url: String): String =
+    url.removePrefix("https://").removePrefix("http://").trimEnd('/')
+
