@@ -92,7 +92,9 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.lifecycle.runtime.compose)
-    // UniFFI's generated ForeignCallback + pointer plumbing uses JNA on the JVM.
-    implementation(libs.jna)
+    // UniFFI's generated Foreign Callback + pointer plumbing uses JNA on the JVM.
+    // Must force the AAR variant — the plain JAR only has desktop native libs,
+    // causing UnsatisfiedLinkError for libjnidispatch.so on Android.
+    implementation(libs.jna) { artifact { type = "aar" } }
     debugImplementation(libs.compose.ui.tooling)
 }
