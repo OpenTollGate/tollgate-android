@@ -72,4 +72,5 @@ val SEED_CANDIDATES: List<String> = listOf(
     "http://192.168.50.1:4747", // ASUS / mesh default
     "http://192.168.4.1:4747",  // GL.iNet default
     "http://192.168.43.1:4747", // Android Wi-Fi hotspot gateway
+    "http://192.168.1.200:4747", // dev gateway (T470 LAN)
 )
