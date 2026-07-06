@@ -36,22 +36,31 @@ SCENARIO C — Router with FIPS backhaul:
 - VPS1 is THE exit node — does NAT to internet
 - Myco narrowed TUN to only route mesh + DNS-intercept .fips/.nsite
 
-## Critical Dependency: enable_app_owned_tun()
+## Critical Dependency: enable_app_owned_tun() — RESOLVED
 
-This API exists in **Origami74's FIPS fork** (ble-v2 branch), NOT in our `reference/fips` clone (k0sti/fips master). 
+**Branch:** `ble-v2` on `github.com/jmcorgan/fips`
+**Commit:** `56062094d604317a885e696f979c425518516cc1` (2026-06-30)
+**Confirmed by project owner.** ble-v2 = v0.4.0 + 11 additive commits by Origami74. Protocol-identical, zero wire-format changes.
 
-**Signature:**
+**Signature** (src/node/mod.rs line 2878):
 ```rust
 pub fn enable_app_owned_tun(&mut self) -> (TunOutboundTx, std::sync::mpsc::Receiver<Vec<u8>>)
 ```
 - `TunOutboundTx` = `tokio::sync::mpsc::Sender<Vec<u8>>` (app→mesh)
-- `Receiver<Vec<u8>>` = blocking receiver (mesh→app)
+- `Receiver<Vec<u8>>` = std blocking receiver (mesh→app)
 - Call after `Node::new()`, before `start()`. `start()` skips system TUN creation.
-- Embedder owns VpnService fd, pumps fd↔channels, pushes only fd::/8 IPv6 packets, clamps TCP MSS.
+- Embedder owns VpnService fd, pushes only fd::/8 IPv6 packets, clamps TCP MSS.
 
-**Myco's pattern** (`myco-core/src/runtime.rs:535`): `tun_bridge::install(...)` stashes channel ends in `OnceLock<Mutex>` statics; JNI exports `send_packet`/`next_packet` pump them lock-free.
+**Three APIs needed (all on ble-v2):**
+1. `enable_app_owned_tun()` — TUN channel bridge (src/node/mod.rs:2878)
+2. `AndroidBleBridge` + `AndroidRadio` trait — BLE byte-bridge via JNI (src/transport/ble/android_io.rs)
+3. `PeerView` + `peer_views()` — lock-free peer list for UI (src/control/read_handle.rs:114)
 
-**BLOCKER:** Must obtain Origami74/ble-v2 FIPS fork or port the function. Our reference clone lacks it.
+**Android transport gap:** ble-v2 gates out UDP/TCP on Android (`cfg(unix)` but construction path only creates BLE transports). For phone→VPS1 direct connection, need custom Android UDP transport mirroring the AndroidBleBridge pattern with DatagramSocket. This is a new task (B8).
+
+**Reference embedder:** myco-core by Origami74 (Arjen) — WORKING Android JNI embedder. Contact for access. Forking it is the fastest path.
+
+**Pointer doc:** `~/repos/fips-exit-e2e/docs/ANDROID-LLM-POINTERS.md` — 308 lines with exact APIs, build config, success criteria, what NOT to do.
 
 ---
 
@@ -80,18 +89,18 @@ pub fn enable_app_owned_tun(&mut self) -> (TunOutboundTx, std::sync::mpsc::Recei
 
 | Task ID | Description | Est. | Deps |
 |---------|-------------|------|------|
-| B1 | Obtain FIPS with `enable_app_owned_tun()` — clone Origami74/ble-v2 fork OR cherry-pick into our reference | 1 session | — |
+| B1 | Clone `github.com/jmcorgan/fips` branch `ble-v2` (commit 5606209). Confirm `enable_app_owned_tun()` compiles. | 0.5 session | — |
 | B2 | Create `TunProvider` trait in tollgate-mobile, wire FIPS Node with channel-based TUN | 1 session | B1 |
 | B3 | `FipsVpnService.kt` — Android foreground service, VpnService.Builder, fd↔channel pump (model on Myco tun_bridge) | 2 sessions | B2 |
 | B4 | FIPS config builder: VPS1 endpoint (66.92.204.38:2121), npub, persistent keys | 0.5 session | B2 |
-| B5 | Reconnect loop — FIPS v0.4.0 has none, must build app-side retry | 1 session | B3 |
-| B6 | Cross-compile FIPS to aarch64-linux-android (cargo ndk) | 1 session | B1 |
-| B7 | Integration test: phone → FIPS mesh → VPS1 → Internet, verify egress | 1 session | B3,B6 |
+| B5 | Reconnect loop — 5s→60s backoff, FIPS has none | 1 session | B3 |
+| B6 | Cross-compile FIPS ble-v2 to aarch64-linux-android (cargo ndk). Build instructions in ANDROID-LLM-POINTERS.md | 1 session | B1 |
+| B7 | Integration test: phone → FIPS mesh → VPS1 → Internet, verify egress (curl ifconfig.me shows 66.92.204.38) | 1 session | B3,B6,B8 |
+| B8 | Android UDP transport — ble-v2 gates out UDP/TCP on Android. Write custom transport mirroring AndroidBleBridge pattern with Kotlin DatagramSocket. Needed for phone→VPS1 direct connection. | 2 sessions | B1 |
 
-**B1 is the critical unknown.** Options:
-1. Clone `github.com/Origami74/fips` branch `ble-v2` — has the function ready
-2. Cherry-pick just the `enable_app_owned_tun` + TUN skip changes onto v0.4.0 tag
-3. Ask Origami74 for the fork URL (they built Myco on it)
+**B8 (Android UDP transport) is the hidden complexity.** ble-v2 gates out UDP/TCP on Android. For phone→VPS1 direct connection, need custom transport. Pattern: Kotlin owns DatagramSocket, exchanges bytes with Rust via channels (same pattern as AndroidBleBridge). Estimated 2 sessions.
+
+**myco-core may already have this.** If Origami74's myco-core already implements the UDP transport, B8 drops to 0. Must check when we get access.
 
 ### Workstream C — Vendor Mode (Phone as Gateway)
 
@@ -161,7 +170,8 @@ A2 → A5
                                                    
 B1 → B2 → B3 → B5                                 │
 B1 → B6                                            │
-         B3,B6 → B7 ─────────────────────────────→ (testable: phone on FIPS mesh)
+B1 → B8                                            │
+         B3,B6,B8 → B7 ──────────────────────────→ (testable: phone on FIPS mesh)
                                                    
          A4 → C1 → C2 → C3                        │
               C2 → C4                             │
@@ -177,7 +187,7 @@ B7 → F2                                           │
 F1,F2,A4 → F3 ───────────────────────────────────→ (testable: auto-discovery)
 ```
 
-**Critical path:** A2 → A4 → B1 → B2 → B3 → B7 → C5 → C6
+**Critical path:** A2→A4→B1→B2→B3→B8→B7→C5→C6
 
 ## What Was Wrong in v1
 
@@ -195,15 +205,14 @@ Router reseller mode = router auto-connects to upstream TollGate and buys intern
 
 **For testing: OFF.** Router has direct WAN. Phone pays router directly. Reseller mode is a deployment-time feature for multi-hop chains, not needed for MVP.
 
-## FIPS Fork Required
+## FIPS Branch Confirmed
 
-Our `reference/fips` clone (k0sti/fips master) does NOT have `enable_app_owned_tun()`. Three options:
+**Branch:** `ble-v2` on `github.com/jmcorgan/fips` (commit 5606209)
+Confirmed by project owner. Not Origami74/fips — it's on jmcorgan/fips.
 
-1. **Clone Origami74/fips ble-v2** — ready to use, what Myco builds on
-2. **Cherry-pick** the TUN function onto v0.4.0 tag
-3. **Implement from scratch** using Myco's tun_bridge as reference (~200 LOC)
+ble-v2 = v0.4.0 + 11 additive commits by Origami74. Protocol-identical. Cross-compiles clean for Android.
 
-Recommend option 1 (fastest). Need Origami74's fork URL.
+Reference embedder: myco-core by Origami74 (Arjen). Contact for access — fastest path is forking it.
 
 ---
 
