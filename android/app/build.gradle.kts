@@ -88,6 +88,8 @@ dependencies {
     // UniFFI's generated Foreign Callback + pointer plumbing uses JNA on the JVM.
     // Must force the AAR variant — the plain JAR only has desktop native libs,
     // causing UnsatisfiedLinkError for libjnidispatch.so on Android.
-    implementation(libs.jna) { artifact { type = "aar" } }
+    // Using explicit @aar notation — the artifact{} block syntax is unreliable
+    // in some AGP versions and silently falls back to the JAR.
+    implementation("net.java.dev.jna:jna:5.16.0@aar")
     debugImplementation(libs.compose.ui.tooling)
 }
