@@ -6,6 +6,7 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -25,18 +26,19 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 
 /**
- * Top-level TollGate scaffold: a four-destination [NavHost] (Discover + Pay +
- * Wallet + Status) with a Material3 bottom navigation bar, wrapped in a dark
- * [MaterialTheme] (the captive-portal SPA is dark-themed). This is the single
- * root composable [MainActivity] renders.
+ * Top-level TollGate scaffold: a five-destination [NavHost] (Discover + Pay +
+ * Wallet + Status + Settings) with a Material3 bottom navigation bar, wrapped in
+ * a dark [MaterialTheme] (the captive-portal SPA is dark-themed). This is the
+ * single root composable [MainActivity] renders.
  *
  * Discover is the start destination — it scans for nearby TollGate peers and,
  * on Connect, adopts the peer as the active gateway
  * ([TollgateViewModel.onSelectPeer]) and navigates to Pay. The master plan's
- * remaining screens (Pair, Settings) slot in here as additional [composable]
- * destinations in later Phase 1 tasks; for now Discover (find a peer), Pay (the
- * bootstrap-token flow), Wallet (balance / mints / token history) and Status
- * (live session telemetry) cover the full client loop.
+ * remaining screens (Pair) slot in here as additional [composable] destinations
+ * in later Phase 1 tasks; for now Discover (find a peer), Pay (the
+ * bootstrap-token flow), Wallet (balance / mints / token history), Status (live
+ * session telemetry) and Settings (identity / FIPS / about) cover the full
+ * client loop.
  */
 @Composable
 fun TollGateApp(vm: TollgateViewModel) {
@@ -47,6 +49,7 @@ fun TollGateApp(vm: TollgateViewModel) {
         TopDestination("pay", "Pay", Icons.Default.Send),
         TopDestination("wallet", "Wallet", Icons.Default.AccountBalanceWallet),
         TopDestination("status", "Status", Icons.Default.Home),
+        TopDestination("settings", "Settings", Icons.Default.Settings),
     )
 
     MaterialTheme(colorScheme = DarkColors) {
@@ -123,6 +126,9 @@ fun TollGateApp(vm: TollgateViewModel) {
                 }
                 composable("status") {
                     StatusScreen(state = state, onStop = vm::onStop)
+                }
+                composable("settings") {
+                    SettingsScreen(state = state)
                 }
             }
         }

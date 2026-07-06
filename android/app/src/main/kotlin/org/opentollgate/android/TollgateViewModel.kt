@@ -47,7 +47,17 @@ import uniffi.tollgate_mobile.TollgateMobileNode
 class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     private val node: TollgateMobileNode = TollgateMobileNode(app.filesDir.absolutePath)
 
-    private val _state = MutableStateFlow(UiState(ourPubkey = node.pubkeyHex()))
+    private val _state = MutableStateFlow(
+        UiState(
+            ourPubkey = node.pubkeyHex(),
+            // Identity is persisted under filesDir by the Rust core; surface the
+            // path on Settings → Identity so a user can locate their keys. Version
+            // + build hash are compile-time constants stamped by Gradle.
+            dataDir = node.dataDir(),
+            appVersion = BuildConfig.VERSION_NAME,
+            buildHash = BuildConfig.GIT_HASH,
+        ),
+    )
     val state: StateFlow<UiState> = _state
 
     fun onHostChange(host: String) = _state.update { it.copy(baseHost = host) }
