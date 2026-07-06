@@ -82,15 +82,23 @@ node.stop().await;
 | `tun` | Compiles but unused at runtime | App-owned TUN path skips it. Harmless. |
 | `fips` build.rs | Auto-detects Android | No `--features` needed |
 
-### Reference: myco-core
+### Reference: myco-core — FULLY PUBLIC (no access needed)
 
-Origami74 (Arjen) has a WORKING Android JNI embedder called myco-core. It implements:
-- All `Java_..._NativeCore_*` JNI exports
-- `AndroidRadio` trait via JNI
-- Kotlin BLE radio (scan, advertise, L2CAP, socket read/write)
-- VpnService ↔ FIPS TUN channel glue
+**Repo:** `github.com/Origami74/myco` (PUBLIC, Rust, 15MB, 187 files)
+**Clone:** `git clone https://github.com/Origami74/myco.git`
 
-**Forking myco-core is the fastest path.** Contact Arjen (Signal @1624e1bb) for access. May already have the UDP transport (B8).
+The entire Android JNI embedder is public. No need to contact Arjen. Fork it.
+
+What's already implemented and ready to port:
+- `myco-core/src/tun_bridge.rs` (3.7KB) — process-global bridge, OnceLock statics, MSS clamping (MAX_MSS=1143)
+- `myco-core/src/tun_bridge_jni.rs` (2.1KB) — JNI exports `tunSendPacket`/`tunNextPacket`
+- `android/app/src/main/java/app/myco/vpn/MycoVpnService.kt` — VpnService with readLoop/writeLoop, routes ONLY fd00::/8
+- `android/app/src/main/java/app/myco/core/NativeCore.kt` — all JNI bindings
+- `myco-core/src/runtime.rs` (37KB) — full Node lifecycle (enable_app_owned_tun → install → control_read_handle → start → run_rx_loop)
+- `myco-core/src/ble_bridge_jni.rs` (10KB) — BLE byte-bridge (if we want BLE too)
+- `myco-core/Cargo.toml` — uses `fips` as path dep, `jni = "0.21"` for Android
+
+**What myco-core does NOT have:** UDP transport. Myco is BLE-only mesh (nearby nsite sharing). It does NOT connect to a remote exit node via UDP. B8 is still needed.
 
 ---
 
@@ -134,17 +142,18 @@ Origami74 (Arjen) has a WORKING Android JNI embedder called myco-core. It implem
 
 | Task ID | Description | Est. | Deps |
 |---------|-------------|------|------|
-| B1 | Clone `jmcorgan/fips` ble-v2 (commit 5606209). Confirm `enable_app_owned_tun()` + build.rs compiles. | 0.5 | — |
-| B2 | Wire FIPS Node lifecycle into tollgate-mobile: Node::new → enable_app_owned_tun → control_read_handle → start → run_rx_loop. Handle the 3 gotchas (channel types, fd00::/8 filter, MSS clamping). | 1.5 | B1 |
-| B3 | `FipsVpnService.kt` — foreground service, VpnService.Builder, fd↔channel pump. Model on myco-core tun_bridge if available, else from scratch. | 2 | B2 |
+| B1 | Clone `jmcorgan/fips` ble-v2 (commit 5606209) + clone `Origami74/myco`. Confirm both compile. | 0.5 | — |
+| B2 | Port myco-core's `tun_bridge.rs` + `runtime.rs` Node lifecycle into tollgate-mobile. Handle 3 gotchas. | 1 | B1 |
+| B3 | Port myco-core's `MycoVpnService.kt` + `NativeCore.kt` into tollgate-android. Rename package, wire VpnService. | 0.5 | B2 |
 | B4 | FIPS config builder: VPS1 endpoint (66.92.204.38:2121), npub, persistent keys from Android KeyStore | 0.5 | B2 |
 | B5 | Reconnect loop — 5s→60s exponential backoff. FIPS has none. | 1 | B3 |
-| B6 | Cross-compile FIPS ble-v2 to aarch64-linux-android. Watch-outs: ring needs NDK CC, nostr-sdk needs rustls, tun crate unused. Build config in ANDROID-LLM-POINTERS.md. | 1.5 | B1 |
-| B7 | Integration test: phone → FIPS mesh → VPS1 → Internet. Success = `curl ifconfig.me` shows 66.92.204.38. Log messages: "Connection promoted to active peer", "Session established (initiator, XK)". | 1 | B3,B6,B8 |
-| B8 | Android UDP transport — ble-v2 gates out UDP/TCP on Android (`cfg(unix)` but construction only creates BLE). Write custom transport mirroring AndroidBleBridge with Kotlin DatagramSocket. **Check if myco-core already has this — if yes, B8 = 0.** | 2 | B1 |
-| B9 | Contact Origami74 (Signal @1624e1bb) for myco-core access. If granted, fork it — may collapse B3+B8 into "port myco-core JNI layer". | 0 | — |
+| B6 | Cross-compile FIPS ble-v2 to aarch64-linux-android. Watch-outs: ring needs NDK CC, nostr-sdk needs rustls. | 1.5 | B1 |
+| B7 | Integration test: phone → FIPS mesh → VPS1 → Internet. Success = `curl ifconfig.me` shows 66.92.204.38. | 1 | B3,B6,B8 |
+| B8 | Android UDP transport — ble-v2 gates out UDP/TCP. Write custom transport mirroring BLE bridge pattern with Kotlin DatagramSocket. **myco-core does NOT have this — confirmed BLE-only.** | 2 | B1 |
 
-**If myco-core access granted:** B3 drops from 2→0.5 (port vs build from scratch), B8 may drop to 0 (if Arjen already has UDP transport). This is the single highest-leverage action.
+**B8 (Android UDP transport) is the remaining hard problem.** ble-v2 gates out UDP/TCP on Android. myco-core confirmed BLE-only — does NOT have UDP transport. Must write custom: Kotlin owns DatagramSocket, exchanges bytes with Rust via channels (same pattern as AndroidBleBridge). Estimated 2 sessions.
+
+**Good news:** B2+B3 are now just "port from myco-core" not "build from scratch." Saved ~3 sessions.
 
 ### Workstream C — Vendor Mode (Phone as Gateway)
 
@@ -215,11 +224,9 @@ A2 → A3                                           │
 A2 → A4 → A6 ────────────────────────────────────→ (phone pays gateway)
 A2 → A5                                            
 
-B9 ──→ (myco-core access? transforms B3+B8)
-                                                   
-B1 → B2 → B3 → B5                                 │
+B1 → B2 → B3 → B5                                 │  (port from myco-core)
 B1 → B6                                            │
-B1 → B8                                            │
+B1 → B8                                            │  (write UDP transport)
          B3,B6,B8 → B7 ──────────────────────────→ (phone on FIPS mesh)
                                                    
          A4 → C1 → C2 → C3                        │
@@ -241,7 +248,7 @@ F1,F2,A4 → F3 ─────────────────────�
 
 **Critical path:** A2→A4→B1→B2→B3→B8→B7→C5→C6
 
-**High-leverage shortcut:** B9 (contact Arjen for myco-core) can collapse B3 (2→0.5 sessions) and B8 (2→0 sessions). Do this FIRST on B-track.
+**B-track saved ~3 sessions** by porting from myco-core instead of building from scratch. B8 (UDP transport) is the remaining hard problem.
 
 ---
 
