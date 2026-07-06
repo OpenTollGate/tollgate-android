@@ -1,71 +1,88 @@
 # TollGate Android — FIPS Dual-Role Architecture Plan
 
-> Phone as customer AND vendor. Routers run FIPS. Comprehensive plan.
-> Date: 2026-07-06
+> Phone as customer AND vendor using FIPS as a cryptographic valve.
+> Routers run FIPS. VPS1 is the exit node. Date: 2026-07-06
 
 ## Vision
 
-The phone is both:
-- **Customer** — buys internet from TollGate routers or FIPS exit nodes
-- **Vendor** — sells internet to other phones/devices via FIPS mesh
+The phone is a **regular FIPS node** (like Myco) — NOT an exit node. It does
+two jobs:
 
-Both roles require FIPS on the phone:
-- **Customer role:** FIPS mesh transport connects to router/exit. Without FIPS, the phone can only use captive-portal WiFi (no mesh, no encrypted tunnel, no vendor capability).
-- **Vendor role:** Phone becomes a FIPS node, advertising itself on Nostr. Other devices peer with it, pay it via Cashu, get internet through its FIPS tunnel.
+- **Customer** — buys internet access from the VPS1 exit node
+- **Vendor** — sells internet access to its own customers (other phones,
+  devices connected to a WiFi hotspot the phone creates)
 
-Routers run FIPS as their transport layer — they are FIPS nodes that also expose WiFi APs for non-FIPS clients.
+**Why FIPS is required (the key insight):** Android phones have no firewall
+rules. Before FIPS, there was no way for the phone to control who gets
+internet access and who doesn't. FIPS solves this:
+
+1. Phone is a FIPS node with an encrypted tunnel to VPS1 exit
+2. VPS1 has a Cashu-gated nftables MASQUERADE (the "valve")
+3. Phone pays VPS1 → VPS1 opens the valve → traffic flows
+4. Phone's own customers pay the phone → phone keeps VPS1 valve open
+5. If a customer stops paying → phone stops relaying → VPS1 valve stays
+   open only for paying customers
+
+The phone doesn't need iptables/nftables. The "firewall" is at VPS1, gated
+by Cashu payments. The phone's FIPS tunnel is the pipe. VPS1's nftables
+is the valve. Cashu is the key.
 
 ## Architecture: The Full Chain
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    PHONE (dual-role)                  │
-│                                                       │
-│  ┌─────────────┐     ┌──────────────┐               │
-│  │ CUSTOMER UI  │     │  VENDOR UI   │               │
-│  │ Discover     │     │  Pricing     │               │
-│  │ Pay          │     │  Earnings    │               │
-│  │ Consume      │     │  Connected   │               │
-│  └──────┬───────┘     └──────┬───────┘               │
-│         │                    │                        │
-│  ┌──────┴────────────────────┴───────────────┐       │
-│  │         TollgateMobileNode (UniFFI)         │       │
-│  │  detect() · pay() · meter() · announce()    │       │
-│  ├─────────────────────────────────────────────┤       │
-│  │              FIPS NODE (Rust .so)            │       │
-│  │  Noise XK · Nostr identity · Peer mgmt       │       │
-│  │  Cashu wallet (NIP-60) · Pricing engine      │
-│  ├─────────────────────────────────────────────┤       │
-│  │          Android VpnService (TUN)            │       │
-│  └─────────────────────────────────────────────┘       │
-│         │                        │                    │
-│    BUY FROM                SELL TO                    │
-│         │                        │                    │
-└─────────┼────────────────────────┼────────────────────┘
-          │                        │
-          ▼                        ▼
-   ┌──────────────┐        ┌──────────────┐
-   │ TOLLGATE      │        │ OTHER PHONE  │
-   │ ROUTER (FIPS) │        │ OR DEVICE    │
-   │               │        │ (FIPS peer)  │
-   │ OpenWRT       │        └──────────────┘
-   │ + FIPS daemon │
-   │ + ndsctl      │
-   │ + Cashu mint  │
-   │               │
-   │ Reseller mode │
-   │ (buys upstream)│
-   └───────┬───────┘
-           │
-           ▼
-   ┌──────────────┐
-   │ VPS1 FIPS    │
-   │ EXIT NODE    │
-   │              │
-   │ FIPS → WG0   │
-   │ → nftables   │
-   │ → internet   │
-   └──────────────┘
+                         VPS1 (FIPS EXIT NODE)
+                         ┌─────────────────────┐
+                         │ FIPS daemon :2121    │
+                         │ WireGuard wg0        │
+                         │ nftables MASQUERADE  │ ← THE VALVE
+                         │ (Cashu-gated)        │
+                         │   paid_peers set     │
+                         │ → eth0 → INTERNET    │
+                         └──────────▲───────────┘
+                                    │
+                         FIPS mesh (Noise XK)
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │      PHONE (FIPS node)         │
+                    │      Like Myco — regular node  │
+                    │                                │
+                    │  ┌──────────────────────────┐  │
+                    │  │  TollgateMobileNode       │  │
+                    │  │  (UniFFI bridge)          │  │
+                    │  ├──────────────────────────┤  │
+                    │  │  FIPS node (Rust .so)     │  │
+                    │  │  Noise XK · Nostr ID      │  │
+                    │  │  CDK Cashu wallet         │  │
+                    │  ├──────────────────────────┤  │
+                    │  │  Android VpnService (TUN) │  │
+                    │  └──────────────────────────┘  │
+                    │                                │
+                    │  Pays VPS1 to open valve       │
+                    │  Routes customer traffic       │
+                    │  through the FIPS tunnel       │
+                    └───────────────┬────────────────┘
+                                    │
+                         WiFi hotspot / FIPS mesh
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │    PHONE'S CUSTOMERS           │
+                    │                               │
+                    │  Laptops on phone hotspot     │
+                    │  Other phones via FIPS mesh   │
+                    │  Any device paying Cashu      │
+                    │                               │
+                    │  Pay phone → phone pays VPS1  │
+                    │  → valve opens → internet     │
+                    └───────────────────────────────┘
+
+   TOLLGATE ROUTERS (FIPS-enabled, physical OpenWRT)
+   ┌─────────────────────────────────────────────────┐
+   │ Same model as the phone:                        │
+   │ - FIPS node connecting to VPS1 exit             │
+   │ - Cashu-gated access for WiFi clients           │
+   │ - Reseller mode: buys upstream, resells locally │
+   │ - ndsctl captive portal for non-FIPS clients    │
+   └─────────────────────────────────────────────────┘
 ```
 
 ## Phone Roles in Detail
@@ -73,29 +90,45 @@ Routers run FIPS as their transport layer — they are FIPS nodes that also expo
 ### Role 1: Customer (buy internet)
 
 The phone needs internet. It:
-1. **Discovers** FIPS-enabled TollGate routers via Nostr (kind 30078 events)
-2. **Connects** via FIPS mesh (Noise XK handshake to router's FIPS daemon)
-3. **Pays** Cashu token to router's TollGate gateway endpoint
-4. **Gets** metered internet access through router's upstream connection
-5. **Auto-toppus** when balance runs low or session expires
+1. **Starts FIPS node** and connects to VPS1 exit via Noise XK handshake
+2. **Pays VPS1** Cashu token → VPS1 adds phone's peer IP to `paid_peers` nftables set
+3. **Valve opens** — VPS1 MASQUERADE fires for phone's traffic
+4. **Internet flows** — phone traffic routes through FIPS → wg0 → nftables → eth0 → internet
+5. **Auto-renews** before Cashu timeout expires
 
-FIPS is the transport — the encrypted mesh tunnel from phone to router. The TollGate protocol handles payment and metering on top of that tunnel.
+The phone is NOT connecting to a local router here. It's connecting directly
+to VPS1 over the internet (cellular or any WiFi). FIPS tunnel encrypts the
+path. VPS1 nftables is the gate.
 
-**FIPS requirement:** Without FIPS, the phone can't create the encrypted mesh tunnel. It would be limited to plain WiFi captive portals (unencrypted, no vendor capability, no mesh resilience).
+**Why FIPS is needed:** The encrypted tunnel gives the phone a private address
+in the 10.99.99.0/24 WireGuard subnet. VPS1 only NATs traffic from IPs in the
+`paid_peers` set. Without FIPS, there's no tunnel, no WireGuard IP, no way for
+VPS1 to identify and gate the phone's traffic.
 
 ### Role 2: Vendor (sell internet)
 
-The phone has internet (via WiFi or cellular) and wants to share/sell it. It:
-1. **Starts** FIPS node with `advertise: true` on Nostr
-2. **Sets** pricing (per-second, per-byte, or flat rate)
-3. **Accepts** incoming FIPS peer connections from other devices
-4. **Routes** their traffic through its own internet connection (VpnService)
-5. **Charges** Cashu tokens for data delivered
-6. **Earns** sats automatically
+The phone has a FIPS tunnel to VPS1 (paid, valve open). It sells internet to
+its own customers:
 
-FIPS is essential here — it's the mesh that other devices connect through. The phone becomes a FIPS exit node itself.
+1. **Phone's FIPS tunnel to VPS1 is active** (phone already paid)
+2. **Customer connects** to phone's WiFi hotspot (or FIPS mesh)
+3. **Customer pays phone** Cashu token
+4. **Phone relays** customer traffic through its FIPS tunnel to VPS1
+5. **Customer traffic exits** at VPS1 → internet (valve already open from phone's payment)
+6. **Phone profits** — customer pays phone X sats, phone pays VPS1 Y sats, keeps X-Y
 
-**FIPS requirement:** Without FIPS, the phone can't accept mesh connections. Android's VpnService can route traffic, but without FIPS there's no encrypted peer-to-peer tunnel, no Nostr-based discovery, and no payment-gated access.
+The phone does NOT need to be an exit node. It's a regular FIPS node relaying
+traffic through the VPS1 exit. The phone's "gateway access management" is
+simply: no payment from customer → phone doesn't relay their traffic → they
+get no internet. The valve is at VPS1, but the phone controls who gets to
+use the pipe.
+
+**Why FIPS is needed (the "valve" insight):** Before FIPS, a phone acting as
+a WiFi hotspot couldn't control access. Android has no per-client firewall
+rules. Any device on the hotspot gets whatever the phone gets. With FIPS, the
+phone can choose which clients' traffic to relay through the FIPS tunnel.
+Clients that haven't paid get nothing. This is the "valve" — it's not a
+firewall rule, it's FIPS routing control.
 
 ## Router Role
 
