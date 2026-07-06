@@ -144,12 +144,16 @@ TollGate Router (OpenWRT)
 └── Cashu wallet (accepts payments, makes upstream payments)
 ```
 
-The router:
-1. Runs FIPS daemon to participate in the mesh network
-2. Exposes a WiFi AP for phones to connect
-3. Accepts Cashu payments via TollGate protocol
-4. Uses FIPS to connect upstream to VPS1 (or another TollGate router)
-5. Resells the upstream internet to its WiFi clients
+The router (tollgate-module-basic-go on OpenWRT):
+1. Has its own internet (WAN plugged in)
+2. Accepts Cashu payments from WiFi clients (captive portal)
+3. Opens/closes access via ndsctl based on payment
+
+That's the basic mode. No reseller mode needed for testing.
+
+**Reseller mode (optional, off for now):** Router has no WAN, auto-detects
+an upstream TollGate, auto-pays it, then resells to its own clients. Useful
+for mesh chains but NOT required for basic phone→router→internet testing.
 
 Phones can connect to the router in **two ways**:
 - **WiFi AP** (captive portal) — for non-FIPS clients (laptops, old phones)
