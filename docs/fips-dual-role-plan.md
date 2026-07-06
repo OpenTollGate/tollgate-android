@@ -1,49 +1,90 @@
 # TollGate Android — Master Task Plan
 
 > Phone as customer AND vendor. FIPS is the valve. VPS1 is the exit.
-> Routers run TollGate + FIPS. Date: 2026-07-06
+> Routers run TollGate + FIPS. Date: 2026-07-06 (revised: ble-v2 pivot)
 
 ## Architecture (Reference)
 
 ```
 VPS1 (66.92.204.38) — FIPS exit node, Cashu-gated nftables (THE VALVE)
   ▲
-  │ FIPS mesh (Noise XK)
+  │ FIPS mesh (Noise XK, UDP :2121 / TCP :8443)
   │
 PHONE — regular FIPS node (like Myco, NOT an exit node)
-  │ ┌────────────────────────────┐
-  │ │ TollgateMobileNode (UniFFI) │
-  │ │ FIPS node · CDK wallet      │
-  │ │ Android VpnService (TUN)    │
-  │ └────────────────────────────┘
+  │ ┌──────────────────────────────────────┐
+  │ │ Rust Core (libfips.so from ble-v2)    │
+  │ │   ├── Node::enable_app_owned_tun()    │
+  │ │   │     → channels (no system TUN)    │
+  │ │   ├── AndroidBleBridge (BLE mesh)     │
+  │ │   ├── Custom Android UDP transport    │
+  │ │   │     (phone→VPS1 direct exit)      │
+  │ │   ├── Noise XK handshake              │
+  │ │   ├── CDK Cashu wallet                │
+  │ │   └── Tollgate server (vendor mode)   │
+  │ ├──────────────────────────────────────┤
+  │ │ VpnService (owns TUN fd)              │
+  │ │   ├── Read: fd → channel → FIPS mesh  │
+  │ │   └── Write: FIPS mesh → channel → fd │
+  │ ├──────────────────────────────────────┤
+  │ │ Kotlin UI (Compose)                   │
+  │ │   ├── Connect/Disconnect              │
+  │ │   ├── Peer list (PeerView)            │
+  │ │   ├── Wallet (CDK balance/pay)        │
+  │ │   ├── Vendor dashboard                │
+  │ │   └── BLE scan results (AdvertView)   │
+  │ └──────────────────────────────────────┘
   │
   ├── Customer: pays VPS1 → valve opens → internet flows
   │
   └── Vendor: customer pays phone → phone relays through FIPS → VPS1
        Phone controls WHO gets relayed (no firewall needed — FIPS routing
-       is the valve). This was impossible before FIPS (no per-client
-       firewall on Android).
+       is the valve). Not paying = not relayed = no internet.
 
 TOLLGATE ROUTERS (OpenWRT)
-  └── Has WAN → accepts Cashu → opens ndsctl for paid clients
+  └── Has WAN → accepts Cashu → opens access for paid clients
       Reseller mode OFF for now (only needed when router has no WAN)
 ```
+
+## Key Decision: ble-v2 Branch (NOT v0.4.0)
+
+**Branch:** `ble-v2` on `github.com/jmcorgan/fips`
+**Commit:** `56062094d604317a885e696f979c425518516cc1` (2026-06-30)
+**Base:** v0.4.0 tag + 11 additive commits by Origami74
+
+Why ble-v2 changes everything:
+- **Cross-compiles clean** to `aarch64-linux-android` (v0.4.0 had 15 errors)
+- `enable_app_owned_tun()` — TUN fd problem already SOLVED upstream
+- `AndroidBleBridge` + `AndroidRadio` trait — JNI byte-bridge, no JNI on hot path
+- `PeerView` + `peer_views()` — lock-free peer list for UI
+- Protocol-identical to v0.4.0 (wire format, handshake, routing unchanged)
+- **myco-core** by Origami74 — WORKING Android embedder, fork it
+
+**Pointer doc:** `fips-exit-e2e/docs/ANDROID-LLM-POINTERS.md` (308 lines, full API signatures + line numbers)
 
 ## Dependency Graph
 
 ```
 A1 (fix discovery) ──────────────────────────────────────────
-  │                                                          
-  ├── A2 (CDK wallet) ── A3 (auto-topup) ── A4 (pay wiring) 
-  │       │                                               ▲
-  │       │                                               │
-  │       └───────────────────────────────────────────────┘
   │
-B1 (patch FIPS for Android) ── B2 (VpnService) ── B3 (lifecycle)
+  ├── A2 (CDK wallet) ── A3 (auto-topup) ── A4 (pay wiring)
+  │       │                                      ▲
+  │       └──────────────────────────────────────┘
   │
-  ├── C1 (tollgate server on phone) ── C2 (hotspot relay) ── C3 (vendor UI)
-  │
-  └── F2 (FIPS mesh discovery) ── F3 (auto-connect)
+B1 (clone ble-v2, verify build) ── B2 (fork myco-core JNI layer)
+  │                                   │
+  ├── B3 (Android UDP transport) ◄────┘  (NEW HARDEST TASK)
+  │   │
+  │   ├── B4 (VpnService + enable_app_owned_tun)
+  │   │   │
+  │   │   └── B5 (lifecycle + reconnect)
+  │   │         │
+  │   │         ├── C1 (tollgate server on phone)
+  │   │         │   │
+  │   │         │   └── C2 (hotspot relay) ── C3 (vendor UI)
+  │   │         │
+  │   │         └── F2 (FIPS mesh discovery) ── F3 (auto-connect)
+  │   │
+  └── B6 (BLE transport — optional for mesh peers)
 
 D1 (flash routers) ── D2 (install tollgate-wrt)     (independent)
 D3 (FIPS OpenWRT pkg) ── D4 (router FIPS config)    (independent)
@@ -122,61 +163,125 @@ F1 (WiFi SSID scan)                                   (independent)
 
 ---
 
-## WORKSTREAM B: FIPS Integration (HARDEST TRACK)
+## WORKSTREAM B: FIPS Integration (ble-v2 TRACK)
 
-### B1: Patch FIPS v0.4.0 for Android Cross-Compilation
+### B1: Clone ble-v2, Verify Cross-Compilation
 
-**Problem:** FIPS v0.4.0 has 15 compile errors targeting `aarch64-linux-android`.
+**Problem:** Need FIPS `.so` for Android. ble-v2 should cross-compile clean.
 **Scope:**
-- Fork FIPS v0.4.0 (tag `da2d0b74b05d`) to `OpenTollGate/fips` or local fork
-- Gate Linux-only TUN code behind `#[cfg(target_os = "linux")]`:
-  - `fips/src/upper/tun.rs:808` — `platform::delete_interface()`
-  - `fips/src/upper/dns.rs:304` — type mismatch `i32` vs `u32`
-  - 13 more platform-specific errors
-- Create `TunProvider` trait: `create_tun(name, mtu) -> RawFd`
-- Implement `AndroidTunProvider` that accepts a pre-opened VpnService fd
-- Cross-compile: `cargo ndk -t arm64-v8a build -p fips` succeeds
-**Dependencies:** None (can start immediately)
-**Acceptance:** `cargo ndk -t arm64-v8a build` exits 0. No errors. `.so` produced.
-**Effort:** 2-3 sessions (this is the single hardest task in the entire plan)
-**Repo:** fork of jmcorgan/fips (v0.4.0)
+- Clone jmcorgan/fips, checkout ble-v2 branch (commit 56062094)
+- Configure `.cargo/config.toml` with NDK linker paths (see pointer doc §BUILD)
+- Cross-compile: `cargo build --target aarch64-linux-android --release`
+- Copy `libfips.so` to tollgate-android `jniLibs/arm64-v8a/`
+- If errors: they should be minor (ble-v2 is additive over v0.4.0)
+**Dependencies:** None
+**Acceptance:** `cargo build --target aarch64-linux-android --release` exits 0. `libfips.so` produced.
+**Effort:** 0.5 sessions (was 2-3 with v0.4.0)
+**Repo:** fork of jmcorgan/fips (ble-v2 branch)
 **Build:** DQ05
-**Reference:** Check if upstream ble-v2 branch has `enable_app_owned_tun()` — may already solve this
+**Pointer:** ANDROID-LLM-POINTERS.md §BUILD INSTRUCTIONS
 
 ---
 
-### B2: Android VpnService Integration
+### B2: Fork myco-core JNI Embedder
 
-**Problem:** FIPS needs a TUN fd. Android requires VpnService API to create it.
+**Problem:** Need the JNI layer that bridges Kotlin ↔ Rust FIPS core.
+**Scope:**
+- Contact Origami74 (Arjen, Signal @1624e1bb-...) for myco-core access
+- Fork myco-core, extract:
+  - `Java_..._NativeCore_*` JNI exports
+  - `AndroidRadio` trait impl via JNI `call_method` on Kotlin `BleRadio`
+  - Kotlin BLE radio (scan, advertise, L2CAP listen/connect, socket read/write)
+  - VpnService ↔ FIPS TUN channel glue (uses `enable_app_owned_tun()`)
+- Adapt to TollGate namespace + UI
+- Key pattern: byte hot path NEVER calls JNI — uses channel bridge:
+  - Inbound: Kotlin calls `bridge.deliver_recv(ch_id, data)` (non-blocking push)
+  - Outbound: Kotlin calls `bridge.next_send(ch_id, timeout)` (blocking pull)
+**Dependencies:** B1 (FIPS compiles)
+**Acceptance:** JNI layer compiles. Kotlin can instantiate FIPS Node, call `enable_app_owned_tun()`, receive channel pair.
+**Effort:** 1-2 sessions
+**Repo:** tollgate-android (Kotlin JNI layer)
+**Reference:** myco-core by Origami74
+**Pointer:** ANDROID-LLM-POINTERS.md §THE EMBEDDER PATTERN
+
+---
+
+### B3: Android UDP Transport (NEW HARDEST TASK)
+
+**Problem:** ble-v2 gates out UDP/TCP system transports on Android. For direct phone→VPS1 exit, need custom transport.
+**Scope:**
+- Write Android UDP transport mirroring AndroidBleBridge byte-bridge pattern:
+  - Kotlin owns `DatagramSocket` (connects to 66.92.204.38:2121)
+  - Rust↔Kotlin exchange via channels (same pattern as BLE)
+  - `deliver_recv(ch_id, data)` for inbound packets
+  - `next_send(ch_id, timeout)` for outbound packets
+- Register transport with FIPS Node before `start()`
+- Must handle: Noise XK handshake over UDP, session establishment, retransmit
+- Test against VPS1: phone sends Noise XK init → VPS1 responds → session active
+**Dependencies:** B1 (FIPS compiles), B2 (JNI pattern established)
+**Acceptance:** Phone connects to VPS1 (66.92.204.38:2121) via custom UDP transport. Logcat shows "Session established (initiator, XK)".
+**Effort:** 2-3 sessions (this is the single hardest task in the plan)
+**Repo:** tollgate-android (Rust transport + Kotlin socket)
+**Reference:** AndroidBleBridge pattern from ble-v2 `src/transport/ble/android_io.rs`
+**Pointer:** ANDROID-LLM-POINTERS.md §ANDROID TRANSPORT GAP
+
+---
+
+### B4: VpnService + enable_app_owned_tun Integration
+
+**Problem:** FIPS needs TUN fd. Android requires VpnService API.
 **Scope:**
 - Create `FipsVpnService.kt` extending Android `VpnService`
 - Request VPN consent (system dialog)
-- Call `Builder.establish()` to get TUN fd
-- Pass fd to FIPS Rust core via UniFFI/JNI
-- Foreground service with persistent notification (survives Doze)
+- Call `Builder.establish()` to get TUN fd (ParcelFileDescriptor)
+- Call `Node::enable_app_owned_tun()` → get `(TunOutboundTx, Receiver<Vec<u8>>)`
+- Read thread: TUN fd → bytes → push to `TunOutboundTx`
+- Write thread: pull from `Receiver<Vec<u8>>` → TUN fd
+- Only push fd00::/8-destined IPv6 packets to mesh
+- Clamp TCP MSS on outbound SYNs
 - AndroidManifest: `BIND_VPN_SERVICE` permission
-- `FipsService.kt` already stubbed in plan — wire it
-**Dependencies:** B1 (FIPS compiles for Android)
-**Acceptance:** App starts FIPS node, VpnService consent dialog appears, FIPS session establishes. Logcat shows Noise XK handshake.
-**Effort:** 2 sessions
+- Foreground service with persistent notification (survives Doze)
+**Dependencies:** B2 (JNI layer), B3 (UDP transport for VPS1 reachability)
+**Acceptance:** App starts FIPS node, VpnService consent dialog appears, FIPS session establishes to VPS1. `curl ifconfig.me` through VPN shows 66.92.204.38.
+**Effort:** 1-2 sessions
 **Repo:** tollgate-android (Kotlin + Rust)
+**Pointer:** ANDROID-LLM-POINTERS.md §App-Owned TUN (THE critical one)
 
 ---
 
-### B3: FIPS Node Lifecycle + Reconnect
+### B5: FIPS Node Lifecycle + Reconnect
 
-**Problem:** FIPS v0.4.0 has no reconnect logic. App must manage lifecycle.
+**Problem:** FIPS has no reconnect logic. App must manage lifecycle.
 **Scope:**
 - Start/stop FIPS node from app UI (toggle in Settings or Status screen)
 - Generate FIPS config programmatically (identity, peers, transports)
 - Store nsec in Android Keystore (hardware-backed if available)
 - Reconnect loop: 5s → 10s → 20s → 40s → 60s (capped)
-- Status reporting: connected peers, session state, bytes transferred
+- Status reporting: connected peers (PeerView), session state, bytes transferred
 - Surface status via `poll_event()` → UiState
-**Dependencies:** B2 (VpnService)
-**Acceptance:** Phone connects to VPS1 FIPS exit (UDP :2121). Logcat shows "Session established". Disconnect → auto-reconnect within 60s.
+- Poll `peer_views()` for lock-free peer list updates
+**Dependencies:** B4 (VpnService)
+**Acceptance:** Phone connects to VPS1 FIPS exit. Logcat shows "Session established". Disconnect → auto-reconnect within 60s. Peer list visible in UI.
 **Effort:** 1-2 sessions
 **Repo:** tollgate-android (Rust + Kotlin)
+**Pointer:** ANDROID-LLM-POINTERS.md §PeerView
+
+---
+
+### B6: BLE Transport (Optional — Mesh Peers)
+
+**Problem:** BLE transport enables nearby peer mesh (phone↔phone). Optional for MVP.
+**Scope:**
+- Wire AndroidBleBridge from myco-core into TollGate
+- Kotlin BleRadio: scan, advertise, L2CAP CoC listen/connect
+- FIPS BLE service UUID: `9c90b7902cc542c09f87c9cc40648f4c`
+- L2CAP PSM: `0x0085`
+- BLE performance: ~200kbps up / ~500kbps down (for nearby mesh, NOT internet exit)
+**Dependencies:** B2 (myco-core JNI layer)
+**Acceptance:** Two phones discover each other via BLE, establish FIPS peer connection.
+**Effort:** 1 session
+**Priority:** LOW (UDP exit to VPS1 is more important than BLE mesh)
+**Repo:** tollgate-android (Kotlin BLE + Rust bridge)
 
 ---
 
@@ -187,13 +292,15 @@ F1 (WiFi SSID scan)                                   (independent)
 **Problem:** App is customer-only. Needs server logic for vendor mode.
 **Scope:**
 - Run `tollgate-net` server logic on phone (in Rust, behind UniFFI)
-- Accept incoming connections from FIPS mesh peers
+- Accept incoming connections from FIPS mesh peers (or WiFi hotspot clients)
 - Validate Cashu payments from peers
 - Create metered sessions for paying peers
 - Track bytes/seconds delivered per peer
+- Relay approved peers' traffic through FIPS tunnel → VPS1 → internet
+- Unpaid peers get nothing relayed (FIPS routing = the valve, no firewall needed)
 - Expose via UniFFI: `vendor_start()`, `vendor_stop()`, `vendor_status() -> VendorState`
-**Dependencies:** B3 (FIPS lifecycle working)
-**Acceptance:** Unit test: peer connects, pays, session starts, bytes metered.
+**Dependencies:** B5 (FIPS lifecycle working)
+**Acceptance:** Unit test: peer connects, pays, session starts, bytes metered, traffic relayed through VPS1.
 **Effort:** 2 sessions
 **Repo:** tollgate-android (Rust core)
 
@@ -201,13 +308,13 @@ F1 (WiFi SSID scan)                                   (independent)
 
 ### C2: WiFi Hotspot + Traffic Relay
 
-**Problem:** Phone must relay customer traffic through FIPS tunnel.
+**Problem:** Phone must relay customer traffic through FIPS tunnel to VPS1.
 **Scope:**
-- Android WiFi hotspot API (or VpnService routing)
+- Android WiFi hotspot API (or VpnService routing rules)
 - Route customer traffic → FIPS tunnel → VPS1 → internet
-- Per-client control: only paying customers get relayed
+- Per-client control: only paying customers get relayed through tunnel
 - Track per-client data usage
-**Dependencies:** C1 (server logic), B3 (FIPS tunnel)
+**Dependencies:** C1 (server logic), B5 (FIPS tunnel)
 **Acceptance:** Laptop on phone hotspot → pays Cashu → gets internet through VPS1.
 **Effort:** 2 sessions
 **Repo:** tollgate-android (Kotlin + Rust)
@@ -242,7 +349,7 @@ F1 (WiFi SSID scan)                                   (independent)
 **Dependencies:** None
 **Acceptance:** Both routers boot OpenWRT, accessible via web UI.
 **Effort:** 1 session (physical work)
-**Note:** These are currently T470 network interfaces, not standalone routers. Clarify with operator: are these actual router devices to flash, or T470 interfaces to run tollgate-module-basic-go on?
+**Note:** These are currently T470 network interfaces. Clarify with operator: are these actual router devices to flash, or T470 interfaces to run tollgate-module-basic-go on?
 
 ---
 
@@ -269,7 +376,7 @@ F1 (WiFi SSID scan)                                   (independent)
 **Dependencies:** None (can start immediately, parallel with everything)
 **Acceptance:** `opkg install fips` works on OpenWRT. FIPS daemon starts, connects to VPS1.
 **Effort:** 2-3 sessions
-**Repo:** fork of jmcorgan/fips + packaging scripts
+**Repo:** fork of jmcorgan/fips (ble-v2) + packaging scripts
 
 ---
 
@@ -338,10 +445,10 @@ F1 (WiFi SSID scan)                                   (independent)
 ### F2: FIPS Mesh Discovery
 
 **Scope:**
-- Query embedded FIPS node for known peers
+- Query embedded FIPS node for known peers via `peer_views()`
 - Merge FIPS peers into Discover list alongside Nostr + WiFi results
 - Show transport type badge (FIPS vs TollGate v2 vs WiFi)
-**Dependencies:** B3 (FIPS lifecycle)
+**Dependencies:** B5 (FIPS lifecycle)
 **Acceptance:** FIPS peers appear in Discover list automatically.
 **Effort:** 1 session
 
@@ -370,7 +477,7 @@ First launch: generate identity, topup wallet, grant VPN permission.
 
 ### G2: Foreground Service
 FIPS runs as foreground service, survives Doze, persistent notification.
-**Effort:** 1 session
+**Effort:** 1 session (may overlap with B4)
 
 ### G3: ZapStore Listing
 `zapstore.yaml`, screenshots, description for decentralized distribution.
@@ -386,11 +493,14 @@ FIPS runs as foreground service, survives Doze, persistent notification.
 | A2 | CDK Cashu wallet | — | 2 sess | CRITICAL |
 | A3 | Auto-topup logic | A2 | 1 sess | HIGH |
 | A4 | Payment flow wiring | A2,A3 | 1-2 sess | CRITICAL |
-| B1 | Patch FIPS for Android | — | 2-3 sess | CRITICAL (parallel) |
-| B2 | VpnService integration | B1 | 2 sess | HIGH |
-| B3 | FIPS lifecycle + reconnect | B2 | 1-2 sess | HIGH |
-| C1 | TollGate server on phone | B3 | 2 sess | MEDIUM |
-| C2 | Hotspot + traffic relay | C1,B3 | 2 sess | MEDIUM |
+| B1 | Clone ble-v2, verify cross-compile | — | 0.5 sess | CRITICAL |
+| B2 | Fork myco-core JNI embedder | B1 | 1-2 sess | CRITICAL |
+| B3 | Android UDP transport (HARDEST) | B1,B2 | 2-3 sess | CRITICAL |
+| B4 | VpnService + enable_app_owned_tun | B2,B3 | 1-2 sess | HIGH |
+| B5 | FIPS lifecycle + reconnect | B4 | 1-2 sess | HIGH |
+| B6 | BLE transport (mesh peers) | B2 | 1 sess | LOW |
+| C1 | TollGate server on phone | B5 | 2 sess | MEDIUM |
+| C2 | Hotspot + traffic relay | C1,B5 | 2 sess | MEDIUM |
 | C3 | Vendor pricing + earnings UI | C1,C2 | 1-2 sess | MEDIUM |
 | D1 | Flash routers with OpenWRT | — | 1 sess | HIGH |
 | D2 | Install tollgate-wrt | D1 | 1 sess | HIGH |
@@ -399,47 +509,73 @@ FIPS runs as foreground service, survives Doze, persistent notification.
 | E1 | VPS1 Nostr advert fix | — | 1 sess | HIGH |
 | E2 | VPS1 Cashu paygate verify | — | 1 sess | HIGH |
 | F1 | WiFi SSID scan | — | 1 sess | MEDIUM |
-| F2 | FIPS mesh discovery | B3 | 1 sess | MEDIUM |
+| F2 | FIPS mesh discovery | B5 | 1 sess | MEDIUM |
 | F3 | Auto-connect orchestration | F1,F2,A4 | 1-2 sess | LOW |
-| G1 | Onboarding flow | A4,B3 | 1 sess | LOW |
-| G2 | Foreground service | B3 | 1 sess | LOW |
+| G1 | Onboarding flow | A4,B5 | 1 sess | LOW |
+| G2 | Foreground service | B4 | 1 sess | LOW |
 | G3 | ZapStore listing | — | 1 sess | LOW |
 
-**Total: ~28-35 sessions across 7 workstreams**
+**Total: ~28-38 sessions across 7 workstreams**
 
 ## Recommended Execution Order
 
-**Sprint 1 (parallel):**
+**Sprint 1 (all parallel, start immediately):**
 - A1: Fix discovery
 - A2: CDK wallet
-- B1: Patch FIPS for Android
+- B1: Clone ble-v2, verify cross-compile ← was 2-3 sessions, now 0.5
 - D1: Flash routers
 - E1: VPS1 Nostr fix
 - E2: VPS1 paygate verify
+- Contact Origami74 for myco-core access (blocking B2)
 
 **Sprint 2 (parallel):**
 - A3: Auto-topup (needs A2)
 - A4: Payment wiring (needs A2)
-- B2: VpnService (needs B1)
+- B2: Fork myco-core JNI layer (needs B1)
 - D2: Install tollgate-wrt (needs D1)
-
-**Sprint 3 (parallel):**
-- B3: FIPS lifecycle (needs B2)
 - D3: FIPS OpenWRT package (parallel)
 
-**Sprint 4:**
-- C1: TollGate server (needs B3)
+**Sprint 3 (parallel):**
+- B3: Android UDP transport (needs B1,B2) ← NEW CRITICAL PATH
+- B6: BLE transport (optional, parallel)
+
+**Sprint 4 (parallel):**
+- B4: VpnService + enable_app_owned_tun (needs B2,B3)
+- B5: FIPS lifecycle (needs B4)
 - D4: Router FIPS config (needs D3, E1)
+
+**Sprint 5:**
+- C1: TollGate server (needs B5)
 - F1: WiFi scan (parallel)
 
-**Sprint 5+:**
+**Sprint 6+:**
 - C2, C3, F2, F3, G1-G3
 
 ## Key Constraints
 
-- FIPS v0.4.0 ONLY (master is mid-refactor, will break)
-- Android VpnService for TUN (no root)
+- **FIPS ble-v2 ONLY** (commit 56062094). NOT v0.4.0 alone (no Android support). NOT master (sans-io refactor breaks everything).
+- **myco-core** is the reference embedder — fork it, don't reinvent. Contact Origami74.
+- **Custom Android UDP transport** is the hardest task — ble-v2 gates out system UDP on Android.
+- Android VpnService for TUN (no root). Use `enable_app_owned_tun()` from ble-v2.
+- No JNI on byte hot path — use channel bridge pattern (deliver_recv/next_send).
 - testnut.cashu.space for testnet ecash
 - DQ05 for builds (T470 OOM-kills cargo-ndk + Gradle)
 - Nostr relays: relay1.orangesync.tech, relay.damus.io, nos.lol
 - GrapheneOS: location permissions for WiFi scan, strict background limits
+- Push only fd00::/8-destined IPv6 packets through the TUN seam
+- Clamp TCP MSS on outbound SYNs
+- Reconnect: 5s → 10s → 20s → 40s → 60s (capped) — FIPS has no built-in retry
+
+## References
+
+- **Pointer doc:** `fips-exit-e2e/docs/ANDROID-LLM-POINTERS.md` (308 lines — APIs, line numbers, build config)
+- **Full handover:** `fips-exit-e2e/docs/HANDOVER-ANDROID-APP.md` (399 lines — 12 sections)
+- **Build environment:** `docs/build-environment.md` (DQ05 setup)
+- **Transport layer:** `docs/fips-transport-layer.md` (Phase 2 integration guide)
+
+## Contacts
+
+- **c08r4d0r** — project owner (Signal group: tollgate-native-android-app)
+- **Origami74 (Arjen)** — ble-v2 author, myco-core (working Android embedder). Signal @1624e1bb-94ef-46d1-b03b-f067ea320af9. MUST CONTACT for myco-core access.
+- **jmcorgan** — FIPS upstream maintainer
+- **Amperstrand** — firmware collaborator (ESP32-C3, RP2040)
