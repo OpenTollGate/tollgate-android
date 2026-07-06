@@ -1,3 +1,7 @@
+> **⚠️ SUPERSEDED by PLAN-v3-dual-role-fips.md**
+> v3 adds: 6-step Node lifecycle, 3 gotchas (channel types/fd00 filter/MSS clamp),
+> cross-compile watch-outs, VPS1 testing findings, version drift fixes.
+
 # TollGate Dual-Role + FIPS Architecture — Corrected Plan v2
 
 > **Supersedes:** DUAL-ROLE-FIPS-PLAN.md (v1.0) and fips-dual-role-plan.md
