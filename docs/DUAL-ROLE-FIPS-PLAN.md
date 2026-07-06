@@ -1,4 +1,8 @@
-# TollGate Dual-Role + FIPS Architecture Plan
+> **⚠️ SUPERSEDED by PLAN-v2-dual-role-fips.md**
+> This plan incorrectly assumed phone-as-FIPS-exit-node.
+> Corrected: phone is a regular FIPS node (like Myco). VPS1 is the only exit.
+
+# TollGate Dual-Role + FIPS Architecture Plan (v1 — DEPRECATED)
 
 ## Vision
 
