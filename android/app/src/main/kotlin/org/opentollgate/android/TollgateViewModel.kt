@@ -18,6 +18,7 @@ import org.opentollgate.android.model.ConsumeEventView
 import org.opentollgate.android.model.DetectedView
 import org.opentollgate.android.model.DiscoveredPeer
 import org.opentollgate.android.model.PaidView
+import org.opentollgate.android.discovery.NostrDiscovery
 import org.opentollgate.android.model.SEED_CANDIDATES
 import org.opentollgate.android.model.TxKind
 import org.opentollgate.android.model.UiState
@@ -211,7 +212,12 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(scanning = true, discoverError = null) }
             try {
                 val s = state.value
-                val candidates = (SEED_CANDIDATES + s.extraCandidates + s.baseHost)
+                // Query Nostr relays for kind 30078 gateway announcements
+                // (VPS1 exit node, LAN gateways that publish). Non-fatal.
+                val nostrUrls = runCatching {
+                    NostrDiscovery().discoverGateways()
+                }.getOrDefault(emptyList())
+                val candidates = (SEED_CANDIDATES + nostrUrls + s.extraCandidates + s.baseHost)
                     .map(String::trim)
                     .filter { it.isNotBlank() }
                     .distinct()

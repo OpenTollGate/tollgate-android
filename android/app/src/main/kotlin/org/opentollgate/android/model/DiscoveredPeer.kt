@@ -65,12 +65,15 @@ fun signalTier(latencyMs: Long, reachable: Boolean): SignalTier = when {
  * rows, no seed list, real RSSI.
  */
 val SEED_CANDIDATES: List<String> = listOf(
-    "http://192.168.8.1:4747",  // H96 / common travel-router default
-    "http://192.168.1.1:4747",  // generic home router
-    "http://192.168.0.1:4747",  // generic home router
-    "http://10.0.0.1:4747",     // alternate home router
-    "http://192.168.50.1:4747", // ASUS / mesh default
-    "http://192.168.4.1:4747",  // GL.iNet default
-    "http://192.168.43.1:4747", // Android Wi-Fi hotspot gateway
-    "http://192.168.1.200:4747", // dev gateway (T470 LAN)
+    // Known TollGate test gateways (T470 dual-NIC, testnut mint)
+    "http://192.168.1.200:4747", // T470 LAN interface — TollGate gateway #1
+    "http://10.47.41.203:4747",  // T470 USB-Ethernet — TollGate gateway #2
+    // Common router defaults for field deployment
+    "http://192.168.8.1:4747",   // H96 / common travel-router default
+    "http://192.168.1.1:4747",   // generic home router
+    "http://192.168.0.1:4747",   // generic home router
+    "http://10.0.0.1:4747",      // alternate home router
+    "http://192.168.50.1:4747",  // ASUS / mesh default
+    "http://192.168.4.1:4747",   // GL.iNet default
+    "http://192.168.43.1:4747",  // Android Wi-Fi hotspot gateway
 )

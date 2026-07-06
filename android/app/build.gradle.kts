@@ -86,10 +86,10 @@ dependencies {
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.lifecycle.runtime.compose)
     // UniFFI's generated Foreign Callback + pointer plumbing uses JNA on the JVM.
-    // Must force the AAR variant — the plain JAR only has desktop native libs,
-    // causing UnsatisfiedLinkError for libjnidispatch.so on Android.
-    // Using explicit @aar notation — the artifact{} block syntax is unreliable
-    // in some AGP versions and silently falls back to the JAR.
+    // Must use explicit @aar notation — the plain JAR only has desktop native
+    // libs, causing UnsatisfiedLinkError for libjnidispatch.so on Android.
     implementation("net.java.dev.jna:jna:5.16.0@aar")
+    // OkHttp for Nostr relay WebSocket queries (relay discovery).
+    implementation(libs.okhttp)
     debugImplementation(libs.compose.ui.tooling)
 }
