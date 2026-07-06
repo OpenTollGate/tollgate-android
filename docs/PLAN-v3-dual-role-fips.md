@@ -202,6 +202,7 @@ What's already implemented and ready to port:
 | E4 | Fix version drift: binary is 0.5.0-dev (built Jul 5), pin says v0.4.0, dashboard says 0.3.0-dev. Rebuild from ble-v2 or v0.4.0 tag. Align all three surfaces. | 1 | — |
 | E5 | Fix SMOKE-1 test default IP: hardcoded to 23.182.128.51, should be 66.92.204.38 (FIPS_EXIT_HOST env). | 0.5 | — |
 | E6 | Set up DQ05 KVM VM for full WG→nftables→internet forwarding tests (Docker can't test NAT faithfully due to netns isolation). | 1.5 | — |
+| E7 | CI pipeline — GitHub Actions for Docker protocol tests + SMOKE-1 on push. Two Hermes crons exist (daily smoke 06:00, health 15min) but no CI. | 1.5 | E5 |
 
 ### Workstream F — Auto-Discovery (After B-track)
 
