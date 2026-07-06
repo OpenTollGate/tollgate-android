@@ -39,6 +39,18 @@ data class UiState(
      *  Driven by WalletScreen (receive/send); real Cashu mint integration is
      *  Phase 3 (see [WalletState]). */
     val wallet: WalletState = WalletState(),
+    /**
+     *  Discovered peers from the last Discover scan (see DiscoverScreen).
+     *  Empty until the first scan; sorted best-signal-first by the ViewModel.
+     *  Phase 2 swaps the seed-list probe for a live FIPS mesh scan. */
+    val discovered: List<DiscoveredPeer> = emptyList(),
+    /** User-added gateway URLs appended to the seed scan candidates. */
+    val extraCandidates: List<String> = emptyList(),
+    /** True while a Discover scan is probing candidates — drives the spinner. */
+    val scanning: Boolean = false,
+    /** Last Discover-scan error (per-host reachability is folded into each
+     *  DiscoveredPeer; this holds only a whole-scan failure). */
+    val discoverError: String? = null,
     val error: String? = null,
 )
 

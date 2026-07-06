@@ -3,17 +3,26 @@ package org.opentollgate.android
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.opentollgate.android.model.ConsumeEventView
 import org.opentollgate.android.model.DetectedView
+import org.opentollgate.android.model.DiscoveredPeer
 import org.opentollgate.android.model.PaidView
+import org.opentollgate.android.model.SEED_CANDIDATES
 import org.opentollgate.android.model.TxKind
 import org.opentollgate.android.model.UiState
 import org.opentollgate.android.model.WalletState
+import org.opentollgate.android.model.signalTier
 import org.opentollgate.android.util.TokenResult
 import org.opentollgate.android.util.buildLocalToken
 import org.opentollgate.android.util.parseCashuToken
@@ -159,6 +168,141 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     fun onStop() {
         runCatching { node.stopConsume() }
         _state.update { it.copy(sessionStartedAt = null) }
+    }
+
+    // -------------------------------------------------------------------------
+    // Discover — scan candidate gateways for nearby TollGate peers (Phase 1).
+    // Probes the seed LAN-gateway list + the current baseHost + any user-added
+    // candidates concurrently with detect(); Phase 2 (FIPS integration) replaces
+    // this with a live mesh scan feeding the same DiscoveredPeer rows.
+    // -------------------------------------------------------------------------
+
+    /** Outstanding Discover scan (concurrent `detect()` probes). Held so a
+     *  re-scan or [onStopDiscover] can cancel an in-flight sweep. */
+    private var discoverJob: Job? = null
+
+    /**
+     * Probe every candidate gateway concurrently and publish the reachable
+     * peers to [UiState.discovered], best-signal-first. Each `detect()` runs on
+     * a [Dispatchers.IO] thread under a 3 s per-host cap, so a dead host never
+     * stalls the sweep. Re-scanning cancels any in-flight job first.
+     *
+     * Note: the 3 s cap cancels the *await*, not the blocking `detect()` call
+     * itself (FFI blocking calls are not interruptible by coroutine
+     * cancellation). A silently-dropping host lingers on its IO thread until
+     * the OS connect fails; for LAN gateway candidates this resolves in well
+     * under a second (connection refused / host unreachable). A Rust-side probe
+     * timeout is tracked as a Phase 2 follow-up. [onStopDiscover] cancels the
+     * await so the UI stays responsive regardless.
+     */
+    fun onDiscover() {
+        discoverJob?.cancel()
+        discoverJob = viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(scanning = true, discoverError = null) }
+            try {
+                val s = state.value
+                val candidates = (SEED_CANDIDATES + s.extraCandidates + s.baseHost)
+                    .map(String::trim)
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                val results = coroutineScope {
+                    candidates.map { host -> async { probe(host) } }.awaitAll()
+                }
+                val sorted = results.sortedWith(
+                    compareBy<DiscoveredPeer> { it.signal.ordinal }.thenBy { it.latencyMs },
+                )
+                _state.update { it.copy(discovered = sorted) }
+            } catch (e: CancellationException) {
+                // Re-scan or Stop cancelled the sweep; keep the existing list.
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(discoverError = e.message ?: "scan failed") }
+            } finally {
+                _state.update { it.copy(scanning = false) }
+            }
+        }
+    }
+
+    /** Cancel an in-flight Discover scan (the Stop button). */
+    fun onStopDiscover() {
+        discoverJob?.cancel()
+        discoverJob = null
+        _state.update { it.copy(scanning = false) }
+    }
+
+    /**
+     * Adopt a discovered peer as the active gateway: copy its base URL into
+     * [UiState.baseHost] and pre-fill [UiState.detected] so PayScreen shows the
+     * peer without a redundant Detect. TollGateApp then navigates to Pay.
+     */
+    fun onSelectPeer(peer: DiscoveredPeer) {
+        _state.update {
+            it.copy(
+                baseHost = peer.baseUrl,
+                detected = if (peer.reachable) {
+                    DetectedView(
+                        pubkeyHex = peer.pubkeyHex,
+                        unit = peer.unit,
+                        version = peer.version,
+                        perUnit = peer.perUnit,
+                        perSecond = peer.perSecond,
+                    )
+                } else {
+                    it.detected
+                },
+                online = peer.reachable,
+                error = null,
+            )
+        }
+    }
+
+    /** Add a user-entered gateway URL to the scan candidate set and re-scan. */
+    fun onAddCandidate(host: String) {
+        val normalized = host.trim().removeSuffix("/")
+        if (normalized.isEmpty()) return
+        _state.update { it.copy(extraCandidates = (it.extraCandidates + normalized).distinct()) }
+        onDiscover()
+    }
+
+    /**
+     * Probe one candidate with a hard 3 s cap. A network/protocol failure (the
+     * host is not a TollGate gateway, or unreachable) is reported as a
+     * reachable=false peer rather than thrown, so the sweep continues. Runs on
+     * the caller's (IO) thread — `detect()` blocks that thread on the node's
+     * tokio runtime, which is safe because it is not a tokio worker thread.
+     */
+    private suspend fun probe(host: String): DiscoveredPeer {
+        val started = System.currentTimeMillis()
+        val detected = withTimeoutOrNull(3_000L) {
+            runCatching { node.detect(host) }.getOrNull()
+        }
+        val latency = System.currentTimeMillis() - started
+        val d = detected
+        return if (d != null) {
+            DiscoveredPeer(
+                baseUrl = host,
+                pubkeyHex = d.pubkeyHex,
+                reachable = true,
+                latencyMs = latency,
+                signal = signalTier(latency, reachable = true),
+                unit = d.unit,
+                version = d.version,
+                perUnit = d.price?.perUnit,
+                perSecond = d.price?.perSecond,
+            )
+        } else {
+            DiscoveredPeer(
+                baseUrl = host,
+                pubkeyHex = "",
+                reachable = false,
+                latencyMs = 0L,
+                signal = signalTier(0, reachable = false),
+                unit = "",
+                version = 0.toUByte(),
+                perUnit = null,
+                perSecond = null,
+            )
+        }
     }
 
     // -------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -24,21 +25,25 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 
 /**
- * Top-level TollGate scaffold: a three-destination [NavHost] (Pay + Wallet +
- * Status) with a Material3 bottom navigation bar, wrapped in a dark
+ * Top-level TollGate scaffold: a four-destination [NavHost] (Discover + Pay +
+ * Wallet + Status) with a Material3 bottom navigation bar, wrapped in a dark
  * [MaterialTheme] (the captive-portal SPA is dark-themed). This is the single
  * root composable [MainActivity] renders.
  *
- * The master plan's full set of screens (Discover, Pair, Settings) slot in here
- * as additional [composable] destinations in later Phase 1 tasks; for now Pay
- * (the bootstrap-token flow), Wallet (balance / mints / token history) and
- * Status (live session telemetry) cover the client loop + the wallet UX.
+ * Discover is the start destination — it scans for nearby TollGate peers and,
+ * on Connect, adopts the peer as the active gateway
+ * ([TollgateViewModel.onSelectPeer]) and navigates to Pay. The master plan's
+ * remaining screens (Pair, Settings) slot in here as additional [composable]
+ * destinations in later Phase 1 tasks; for now Discover (find a peer), Pay (the
+ * bootstrap-token flow), Wallet (balance / mints / token history) and Status
+ * (live session telemetry) cover the full client loop.
  */
 @Composable
 fun TollGateApp(vm: TollgateViewModel) {
     val state by vm.state.collectAsState()
     val nav = rememberNavController()
     val destinations = listOf(
+        TopDestination("discover", "Discover", Icons.Default.Radar),
         TopDestination("pay", "Pay", Icons.Default.Send),
         TopDestination("wallet", "Wallet", Icons.Default.AccountBalanceWallet),
         TopDestination("status", "Status", Icons.Default.Home),
@@ -71,9 +76,27 @@ fun TollGateApp(vm: TollgateViewModel) {
         ) { pad ->
             NavHost(
                 navController = nav,
-                startDestination = "pay",
+                startDestination = "discover",
                 modifier = Modifier.padding(pad),
             ) {
+                composable("discover") {
+                    DiscoverScreen(
+                        state = state,
+                        onScan = vm::onDiscover,
+                        onStopScan = vm::onStopDiscover,
+                        // Lambda (not a bare ::onSelectPeer reference): selecting a
+                        // peer both updates the active gateway AND navigates to Pay.
+                        onConnect = { peer ->
+                            vm.onSelectPeer(peer)
+                            nav.navigate("pay") {
+                                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                        onAddCandidate = vm::onAddCandidate,
+                    )
+                }
                 composable("pay") {
                     PayScreen(
                         state = state,
