@@ -1,459 +1,445 @@
-# TollGate Android — FIPS Dual-Role Architecture Plan
+# TollGate Android — Master Task Plan
 
-> Phone as customer AND vendor using FIPS as a cryptographic valve.
-> Routers run FIPS. VPS1 is the exit node. Date: 2026-07-06
+> Phone as customer AND vendor. FIPS is the valve. VPS1 is the exit.
+> Routers run TollGate + FIPS. Date: 2026-07-06
 
-## Vision
-
-The phone is a **regular FIPS node** (like Myco) — NOT an exit node. It does
-two jobs:
-
-- **Customer** — buys internet access from the VPS1 exit node
-- **Vendor** — sells internet access to its own customers (other phones,
-  devices connected to a WiFi hotspot the phone creates)
-
-**Why FIPS is required (the key insight):** Android phones have no firewall
-rules. Before FIPS, there was no way for the phone to control who gets
-internet access and who doesn't. FIPS solves this:
-
-1. Phone is a FIPS node with an encrypted tunnel to VPS1 exit
-2. VPS1 has a Cashu-gated nftables MASQUERADE (the "valve")
-3. Phone pays VPS1 → VPS1 opens the valve → traffic flows
-4. Phone's own customers pay the phone → phone keeps VPS1 valve open
-5. If a customer stops paying → phone stops relaying → VPS1 valve stays
-   open only for paying customers
-
-The phone doesn't need iptables/nftables. The "firewall" is at VPS1, gated
-by Cashu payments. The phone's FIPS tunnel is the pipe. VPS1's nftables
-is the valve. Cashu is the key.
-
-## Architecture: The Full Chain
+## Architecture (Reference)
 
 ```
-                         VPS1 (FIPS EXIT NODE)
-                         ┌─────────────────────┐
-                         │ FIPS daemon :2121    │
-                         │ WireGuard wg0        │
-                         │ nftables MASQUERADE  │ ← THE VALVE
-                         │ (Cashu-gated)        │
-                         │   paid_peers set     │
-                         │ → eth0 → INTERNET    │
-                         └──────────▲───────────┘
-                                    │
-                         FIPS mesh (Noise XK)
-                                    │
-                    ┌───────────────┴───────────────┐
-                    │      PHONE (FIPS node)         │
-                    │      Like Myco — regular node  │
-                    │                                │
-                    │  ┌──────────────────────────┐  │
-                    │  │  TollgateMobileNode       │  │
-                    │  │  (UniFFI bridge)          │  │
-                    │  ├──────────────────────────┤  │
-                    │  │  FIPS node (Rust .so)     │  │
-                    │  │  Noise XK · Nostr ID      │  │
-                    │  │  CDK Cashu wallet         │  │
-                    │  ├──────────────────────────┤  │
-                    │  │  Android VpnService (TUN) │  │
-                    │  └──────────────────────────┘  │
-                    │                                │
-                    │  Pays VPS1 to open valve       │
-                    │  Routes customer traffic       │
-                    │  through the FIPS tunnel       │
-                    └───────────────┬────────────────┘
-                                    │
-                         WiFi hotspot / FIPS mesh
-                                    │
-                    ┌───────────────┴───────────────┐
-                    │    PHONE'S CUSTOMERS           │
-                    │                               │
-                    │  Laptops on phone hotspot     │
-                    │  Other phones via FIPS mesh   │
-                    │  Any device paying Cashu      │
-                    │                               │
-                    │  Pay phone → phone pays VPS1  │
-                    │  → valve opens → internet     │
-                    └───────────────────────────────┘
+VPS1 (66.92.204.38) — FIPS exit node, Cashu-gated nftables (THE VALVE)
+  ▲
+  │ FIPS mesh (Noise XK)
+  │
+PHONE — regular FIPS node (like Myco, NOT an exit node)
+  │ ┌────────────────────────────┐
+  │ │ TollgateMobileNode (UniFFI) │
+  │ │ FIPS node · CDK wallet      │
+  │ │ Android VpnService (TUN)    │
+  │ └────────────────────────────┘
+  │
+  ├── Customer: pays VPS1 → valve opens → internet flows
+  │
+  └── Vendor: customer pays phone → phone relays through FIPS → VPS1
+       Phone controls WHO gets relayed (no firewall needed — FIPS routing
+       is the valve). This was impossible before FIPS (no per-client
+       firewall on Android).
 
-   TOLLGATE ROUTERS (FIPS-enabled, physical OpenWRT)
-   ┌─────────────────────────────────────────────────┐
-   │ Same model as the phone:                        │
-   │ - FIPS node connecting to VPS1 exit             │
-   │ - Cashu-gated access for WiFi clients           │
-   │ - Reseller mode: buys upstream, resells locally │
-   │ - ndsctl captive portal for non-FIPS clients    │
-   └─────────────────────────────────────────────────┘
+TOLLGATE ROUTERS (OpenWRT)
+  └── Has WAN → accepts Cashu → opens ndsctl for paid clients
+      Reseller mode OFF for now (only needed when router has no WAN)
 ```
-
-## Phone Roles in Detail
-
-### Role 1: Customer (buy internet)
-
-The phone needs internet. It:
-1. **Starts FIPS node** and connects to VPS1 exit via Noise XK handshake
-2. **Pays VPS1** Cashu token → VPS1 adds phone's peer IP to `paid_peers` nftables set
-3. **Valve opens** — VPS1 MASQUERADE fires for phone's traffic
-4. **Internet flows** — phone traffic routes through FIPS → wg0 → nftables → eth0 → internet
-5. **Auto-renews** before Cashu timeout expires
-
-The phone is NOT connecting to a local router here. It's connecting directly
-to VPS1 over the internet (cellular or any WiFi). FIPS tunnel encrypts the
-path. VPS1 nftables is the gate.
-
-**Why FIPS is needed:** The encrypted tunnel gives the phone a private address
-in the 10.99.99.0/24 WireGuard subnet. VPS1 only NATs traffic from IPs in the
-`paid_peers` set. Without FIPS, there's no tunnel, no WireGuard IP, no way for
-VPS1 to identify and gate the phone's traffic.
-
-### Role 2: Vendor (sell internet)
-
-The phone has a FIPS tunnel to VPS1 (paid, valve open). It sells internet to
-its own customers:
-
-1. **Phone's FIPS tunnel to VPS1 is active** (phone already paid)
-2. **Customer connects** to phone's WiFi hotspot (or FIPS mesh)
-3. **Customer pays phone** Cashu token
-4. **Phone relays** customer traffic through its FIPS tunnel to VPS1
-5. **Customer traffic exits** at VPS1 → internet (valve already open from phone's payment)
-6. **Phone profits** — customer pays phone X sats, phone pays VPS1 Y sats, keeps X-Y
-
-The phone does NOT need to be an exit node. It's a regular FIPS node relaying
-traffic through the VPS1 exit. The phone's "gateway access management" is
-simply: no payment from customer → phone doesn't relay their traffic → they
-get no internet. The valve is at VPS1, but the phone controls who gets to
-use the pipe.
-
-**Why FIPS is needed (the "valve" insight):** Before FIPS, a phone acting as
-a WiFi hotspot couldn't control access. Android has no per-client firewall
-rules. Any device on the hotspot gets whatever the phone gets. With FIPS, the
-phone can choose which clients' traffic to relay through the FIPS tunnel.
-Clients that haven't paid get nothing. This is the "valve" — it's not a
-firewall rule, it's FIPS routing control.
-
-## Router Role
-
-Routers run **both** FIPS and TollGate:
-
-```
-TollGate Router (OpenWRT)
-├── FIPS daemon (mesh transport, Nostr identity, peer discovery)
-├── tollgate-module-basic-go (Cashu payment, metering, captive portal)
-├── NoDogSplash (ndsctl — gates MAC addresses based on payment)
-├── hostapd (WiFi AP for clients)
-├── Reseller mode (auto-buys from upstream TollGate/FIPS exit)
-└── Cashu wallet (accepts payments, makes upstream payments)
-```
-
-The router (tollgate-module-basic-go on OpenWRT):
-1. Has its own internet (WAN plugged in)
-2. Accepts Cashu payments from WiFi clients (captive portal)
-3. Opens/closes access via ndsctl based on payment
-
-That's the basic mode. No reseller mode needed for testing.
-
-**Reseller mode (optional, off for now):** Router has no WAN, auto-detects
-an upstream TollGate, auto-pays it, then resells to its own clients. Useful
-for mesh chains but NOT required for basic phone→router→internet testing.
-
-Phones can connect to the router in **two ways**:
-- **WiFi AP** (captive portal) — for non-FIPS clients (laptops, old phones)
-- **FIPS mesh** — for FIPS-enabled phones (direct peer, encrypted tunnel)
-
-## What FIPS Provides (Why It's Required)
-
-| Capability | Without FIPS | With FIPS |
-|------------|-------------|-----------|
-| Encrypted tunnel | Plain HTTP/WiFi | Noise XK end-to-end encryption |
-| Nostr identity | Separate key management | nsec/npub native to the protocol |
-| Peer discovery | Manual URL entry or WiFi SSID scan | Nostr kind 30078 automatic |
-| Vendor capability | Captive portal only (local WiFi) | Mesh-wide vendor (any FIPS peer) |
-| Multi-hop | Not possible | FIPS mesh routing (resilience) |
-| Reconnect | Manual | FIPS re-establishment + retry loop |
-| Payment transport | HTTP to gateway | FIPS mesh session (encrypted) |
-
-## Implementation Plan
-
-### Phase 0: Foundation (CURRENT — mostly done)
-
-**Status:** Tollgate-mobile Rust core builds, UniFFI bindings work, APK runs on phone.
-
-| Task | Status |
-|------|--------|
-| tollgate-mobile Rust core (detect/pay/consume) | ✅ Done |
-| UniFFI Kotlin bindings | ✅ Done |
-| Jetpack Compose UI (5 screens) | ✅ Done |
-| APK builds on DQ05 | ✅ Done |
-| JNA fix (@aar) | ✅ Done |
-| Nostr relay discovery | ✅ Done (queries kind 30078) |
-| LAN gateway testing | ✅ Done (T470 serves :4747) |
-
-**Remaining Phase 0:**
-- [ ] Fix 0/9 discovery issue (phone network reachability — likely AP isolation)
-- [ ] Verify Nostr discovery finds and probes gateways correctly
-- [ ] Test full detect→pay→consume cycle against T470 gateway
-
-### Phase 1: Cashu Wallet Integration (CRITICAL PATH)
-
-The phone needs a real Cashu wallet to pay for internet.
-
-**What needs to be built:**
-
-1. **Cashu mint client** (Rust, in tollgate-mobile)
-   - Already have `cashu` crate as dependency (CDK rev 63866dc)
-   - Implement: `check_balance()`, `mint_tokens()`, `melt_tokens()`
-   - Default mint: testnut.cashu.space (testnet ecash)
-   - Store tokens in app-private storage
-
-2. **Wallet UI** (Kotlin/Compose — WalletScreen already exists, needs wiring)
-   - Balance display (sats)
-   - Mint management (add/remove mints, health check)
-   - Token history (minted, melted, spent)
-   - Manual topup (paste a Cashu token, or mint from a Lightning invoice)
-   - Auto-topup toggle (when balance < threshold, auto-mint)
-
-3. **Auto-topup logic** (Rust, in tollgate-mobile)
-   - Monitor balance during consume loop
-   - When balance < renewal threshold, automatically mint new tokens
-   - For testnet: free minting from testnut.cashu.space
-   - For mainnet: would need Lightning payment (future)
-
-4. **Payment integration** (connect wallet to pay flow)
-   - `pay()` currently uses bootstrap-token stub
-   - Replace with real Cashu token from wallet
-   - Gateway validates token, starts session
-
-**Estimated effort:** 2-3 focused sessions. The CDK crate handles most crypto. UI scaffolding exists. Main work is connecting wallet balance → auto-pay → session renewal.
-
-### Phase 2: FIPS Integration (THE HARD PART)
-
-Embed FIPS v0.4.0 into the app as the networking layer.
-
-**Step 2a: Patch FIPS for Android cross-compilation**
-
-FIPS v0.4.0 has 15 compile errors targeting `aarch64-linux-android`:
-- `fips/src/upper/tun.rs:808` — `platform::delete_interface()` unresolved
-- `fips/src/upper/dns.rs:304` — type mismatch `i32` vs `u32`
-- 13 more errors in platform-specific code
-
-**Fix approach:**
-1. Create a `TunProvider` trait in FIPS:
-   ```rust
-   pub trait TunProvider: Send + Sync {
-       fn create_tun(&self, name: &str, mtu: u16) -> Result<RawFd>;
-       fn delete_tun(&self, name: &str) -> Result<()>;
-   }
-   ```
-2. Gate Linux-specific code behind `#[cfg(target_os = "linux")]`
-3. Implement `AndroidTunProvider` that accepts a VpnService fd
-4. Gate DNS platform code similarly
-5. Cross-compile to `aarch64-linux-android` clean
-
-**This is the hardest single task.** The FIPS TUN code is tightly coupled to Linux `/dev/net/tun`. Android requires `VpnService.Builder.establish()` to get the fd. The Rust code must accept a pre-opened fd instead of creating its own.
-
-**Step 2b: Android VpnService integration**
-
-1. Create `FipsVpnService` extending Android `VpnService`
-2. User grants VPN consent (system dialog)
-3. VpnService creates TUN fd via `Builder.establish()`
-4. Pass fd to FIPS Rust core via JNI/UniFFI
-5. FIPS routes mesh traffic through the VpnService TUN
-
-2. Foreground service with persistent notification (required by Android to avoid Doze kill)
-
-3. The VpnService routes:
-   - Customer mode: all phone traffic → FIPS tunnel → router/exit → internet
-   - Vendor mode: incoming FIPS peer traffic → phone's internet connection
-
-**Step 2c: FIPS node lifecycle management**
-
-1. Start/stop FIPS node from app UI
-2. FIPS config generated programmatically (not YAML file)
-3. Nostr identity stored in Android Keystore (hardware-backed if available)
-4. Reconnect loop: 5s → 10s → 20s → 40s → 60s (capped)
-5. Status reporting to UI (connected peers, session state, data transferred)
-
-**Estimated effort:** 4-6 focused sessions. The FIPS TUN patch is the bottleneck — needs careful conditional compilation work and testing.
-
-### Phase 3: Vendor Mode (phone sells internet)
-
-Once FIPS is embedded, vendor mode adds:
-
-1. **Pricing UI** — set per-second and per-byte rates, accepted mints
-2. **FIPS advertisement** — publish kind 30078 with pricing + transport info
-3. **Incoming peer management** — accept/reject FIPS connections
-4. **Payment processing** — Cashu validation, session creation for peers
-5. **Metering** — track bytes/seconds delivered to each peer
-6. **Earnings dashboard** — sats earned, active sessions, peer list
-7. **VpnService routing** — route peer traffic through phone's internet
-
-This reuses the TollGate v2 protocol but in reverse: the phone IS the gateway. The `tollgate-net` server logic needs to run on the phone (in Rust), accepting connections from FIPS mesh peers.
-
-**Estimated effort:** 3-4 sessions after Phase 2. The protocol exists; the work is wrapping it in a vendor-facing UI and wiring it to FIPS mesh sessions.
-
-### Phase 4: Router FIPS Integration
-
-Flash physical routers with OpenWRT + TollGate + FIPS.
-
-**Router software stack:**
-```
-OpenWRT 25.x (apk packages)
-├── tollgate-wrt (tollgate-module-basic-go) — existing
-├── fips daemon — NEW: needs OpenWRT package
-├── wireguard — existing
-├── nodogsplash — existing (captive portal)
-└── hostapd — existing (WiFi AP)
-```
-
-**Router FIPS config:**
-```yaml
-node:
-  identity:
-    nsec: "nsec1..."  # per-router, generated on first boot
-  discovery:
-    nostr:
-      enabled: true
-      policy: configured_only
-      advertise: true
-
-tun:
-  enabled: true
-  name: fips0
-
-transports:
-  udp:
-    bind_addr: "0.0.0.0:2121"
-    advertise_on_nostr: true
-
-peers:
-  - npub: "npub1mqelkzqp4659..."  # VPS1 exit node
-    alias: "vps1-exit"
-    addresses:
-      - transport: udp
-        addr: "66.92.204.38:2121"
-    connect_policy: auto_connect
-```
-
-**Router reseller flow:**
-1. FIPS daemon connects to VPS1 exit (upstream)
-2. TollGate module detects FIPS tunnel as upstream internet
-3. Phone connects to router WiFi AP (or FIPS mesh directly)
-4. Phone pays router via Cashu
-5. Router opens access (ndsctl for WiFi clients, FIPS session for mesh peers)
-6. Router pays VPS1 for upstream internet (reseller mode)
-7. Internet flows: phone → router → VPS1 → internet
-
-**Estimated effort:** 2-3 sessions. Requires physical routers, OpenWRT flashing, FIPS OpenWRT packaging.
-
-### Phase 5: Auto-Discovery and Auto-Connect
-
-The phone automatically finds TollGate routers and connects without manual intervention.
-
-**Discovery sources (in priority order):**
-1. **FIPS mesh scan** — query FIPS node for known peers
-2. **Nostr relays** — kind 30078 events with `transport: fips` or `transport: tollgate-v2`
-3. **WiFi SSID scan** — SSIDs matching `TollGate-*` pattern
-4. **Seed list** — hardcoded common router IPs (current Phase 0 approach)
-5. **Manual entry** — "add gateway URL" field (already exists)
-
-**Auto-connect logic:**
-1. Discovery runs on app launch + every 60s while in foreground
-2. Best peer selected by: signal strength → price → latency
-3. If auto-connect enabled: detect → pay (auto-topup) → consume automatically
-4. If payment fails: try next-best peer
-5. If all fail: show error, retry with backoff
-
-**WiFi SSID scan implementation (Kotlin):**
-- Requires `ACCESS_FINE_LOCATION` + `ACCESS_WIFI_STATE` permissions
-- Use `WifiManager.startScan()` + `BroadcastReceiver`
-- Filter results for SSIDs starting with `TollGate-`
-- Extract gateway info from SSID suffix (e.g., `TollGate-ABC123` → known router)
-- GrapheneOS: must handle location being globally disabled
-
-**Estimated effort:** 2 sessions. Nostr discovery exists. WiFi SSID scan is standard Android. Auto-connect is orchestration logic.
-
-### Phase 6: Polish and Release
-
-1. **Onboarding flow** — first launch: generate identity, topup wallet, grant VPN permission
-2. **Background service** — FIPS runs as foreground service, survives Doze
-3. **Notifications** — connection status, payment reminders, earnings updates
-4. **Dark/light theme** — Material Design 3
-5. **i18n** — multi-language support
-6. **ZapStore listing** — `zapstore.yaml` for decentralized distribution
-7. **Security audit** — Cashu wallet, nsec storage, VpnService isolation
-
-**Estimated effort:** 2-3 sessions.
 
 ## Dependency Graph
 
 ```
-Phase 0 (foundation) ✅ ← we are here
-    │
-    ├── Phase 1 (Cashu wallet) ← CRITICAL PATH, do next
-    │       │
-    │       └── Phase 5 (auto-discover/connect)
-    │
-    ├── Phase 2 (FIPS integration) ← HARDEST, parallel track
-    │       │
-    │       ├── Phase 3 (vendor mode)
-    │       │
-    │       └── Phase 4 (router FIPS)
-    │
-    └── Phase 6 (polish)
+A1 (fix discovery) ──────────────────────────────────────────
+  │                                                          
+  ├── A2 (CDK wallet) ── A3 (auto-topup) ── A4 (pay wiring) 
+  │       │                                               ▲
+  │       │                                               │
+  │       └───────────────────────────────────────────────┘
+  │
+B1 (patch FIPS for Android) ── B2 (VpnService) ── B3 (lifecycle)
+  │
+  ├── C1 (tollgate server on phone) ── C2 (hotspot relay) ── C3 (vendor UI)
+  │
+  └── F2 (FIPS mesh discovery) ── F3 (auto-connect)
+
+D1 (flash routers) ── D2 (install tollgate-wrt)     (independent)
+D3 (FIPS OpenWRT pkg) ── D4 (router FIPS config)    (independent)
+
+E1 (VPS1 nostr fix)                                   (independent)
+E2 (VPS1 paygate verify)                              (independent)
+
+F1 (WiFi SSID scan)                                   (independent)
 ```
 
-**Critical path:** Phase 0 → Phase 1 → (customer can buy internet)
-**Parallel path:** Phase 0 → Phase 2 → Phase 3 → (vendor can sell internet)
-**Infrastructure:** Phase 4 (routers) can start anytime, independent of app
+---
 
-## What to Do Right Now
+## WORKSTREAM A: App Customer Flow (CRITICAL PATH)
 
-### Immediate (this session)
+### A1: Fix Discovery — Phone Can't Reach Gateway
 
-1. **Fix the 0/9 discovery issue** — verify phone can reach T470 gateway. If AP isolation, move gateway to 0.0.0.0 bind or use phone's actual network.
+**Problem:** Phone shows 0/9 peers. All probes fail including Nostr-discovered URLs.
+**Scope:**
+- Diagnose: is phone on same network as T470? AP isolation?
+- Try binding gateway to `0.0.0.0` instead of specific IP
+- Verify Nostr discovery returns URLs (events published, d-tag = `tollgate-gateway`)
+- Test manual gateway URL entry from phone
+**Dependencies:** None
+**Acceptance:** Phone Discover shows ≥1 reachable peer. Screenshot evidence.
+**Effort:** 1 session (may be a 5-min fix or a network config issue)
+**Machine:** T470 + phone
 
-2. **Flash the two physical routers** — They have OpenWRT-capable hardware:
-   - enp0s31f6 (192.168.1.200) — LAN interface
-   - enx00e04c390818 (10.47.41.203) — USB Ethernet adapter
+---
 
-   Install tollgate-wrt package from Nostr (nak fetch kind 1063).
+### A2: CDK Cashu Wallet Integration
 
-3. **Create FIPS OpenWRT package** — Build FIPS daemon for OpenWRT architectures (aarch64_cortex-a53, mips_24kc, x86_64). This enables routers to join the FIPS mesh.
+**Problem:** App uses bootstrap-token stub (filler crypto). Needs real Cashu operations.
+**Scope:**
+- Add `cdk` crate (not just `cashu` types) to tollgate-mobile Cargo.toml
+- Implement wallet struct with: `check_balance()`, `mint_tokens()`, `melt_tokens()`, `check_spent()`
+- Default mint: `https://testnut.cashu.space`
+- Proof storage: SQLite or flatfile in app-private storage
+- Expose via UniFFI: `wallet_balance() -> u64`, `wallet_topup(amount_sat)`, `wallet_pay(amount_sat) -> String`
+**Dependencies:** None (parallel with B-track)
+**Acceptance:** `cargo test` with real testnut mint. Wallet can mint 1000 sats, check balance, melt 100 sats.
+**Effort:** 2 sessions
+**Repo:** tollgate-android (Rust core)
+**Build:** DQ05
 
-### Next sessions
+---
 
-4. **Phase 1: Cashu wallet** — Wire testnut.cashu.space into the app. Auto-topup with testnet ecash. This unblocks real payment testing.
+### A3: Auto-Topup Logic
 
-5. **Phase 2: FIPS TUN patch** — The single hardest task. Fork FIPS v0.4.0, add `#[cfg(target_os = "android")]` guards, create `AndroidTunProvider`, cross-compile.
+**Problem:** No automatic balance management during consume loop.
+**Scope:**
+- Monitor wallet balance during `start_consume()` loop
+- When balance < renewal_threshold, auto-mint new tokens from testnut
+- For testnet: free minting (no Lightning invoice needed)
+- Surface topup events via `poll_event()`
+- Configurable threshold and auto-topup toggle
+**Dependencies:** A2 (CDK wallet)
+**Acceptance:** Session stays alive for 10+ minutes with auto-topup. Balance never hits zero.
+**Effort:** 1 session
+**Repo:** tollgate-android (Rust core)
 
-6. **Phase 3: Vendor mode** — Once FIPS is embedded, phone becomes a gateway. Reuses TollGate protocol in reverse.
+---
+
+### A4: Payment Flow Wiring
+
+**Problem:** `pay()` uses `build_bootstrap_token()` (filler). Needs real CDK tokens.
+**Scope:**
+- Replace `build_bootstrap_token()` call in `pay()` with `wallet.melt_tokens(amount)`
+- Gateway receives real Cashu token, validates against mint, starts session
+- Wire WalletScreen balance display to live CDK wallet
+- Wire PayScreen to show real balance + price from gateway
+- Test full cycle: detect → pay (real token) → consume → session active
+**Dependencies:** A2, A3
+**Acceptance:** Phone pays T470 gateway with real testnut Cashu token. Session starts. Traffic flows. Screenshot + logcat evidence.
+**Effort:** 1-2 sessions
+**Repo:** tollgate-android (Rust + Kotlin)
+
+---
+
+## WORKSTREAM B: FIPS Integration (HARDEST TRACK)
+
+### B1: Patch FIPS v0.4.0 for Android Cross-Compilation
+
+**Problem:** FIPS v0.4.0 has 15 compile errors targeting `aarch64-linux-android`.
+**Scope:**
+- Fork FIPS v0.4.0 (tag `da2d0b74b05d`) to `OpenTollGate/fips` or local fork
+- Gate Linux-only TUN code behind `#[cfg(target_os = "linux")]`:
+  - `fips/src/upper/tun.rs:808` — `platform::delete_interface()`
+  - `fips/src/upper/dns.rs:304` — type mismatch `i32` vs `u32`
+  - 13 more platform-specific errors
+- Create `TunProvider` trait: `create_tun(name, mtu) -> RawFd`
+- Implement `AndroidTunProvider` that accepts a pre-opened VpnService fd
+- Cross-compile: `cargo ndk -t arm64-v8a build -p fips` succeeds
+**Dependencies:** None (can start immediately)
+**Acceptance:** `cargo ndk -t arm64-v8a build` exits 0. No errors. `.so` produced.
+**Effort:** 2-3 sessions (this is the single hardest task in the entire plan)
+**Repo:** fork of jmcorgan/fips (v0.4.0)
+**Build:** DQ05
+**Reference:** Check if upstream ble-v2 branch has `enable_app_owned_tun()` — may already solve this
+
+---
+
+### B2: Android VpnService Integration
+
+**Problem:** FIPS needs a TUN fd. Android requires VpnService API to create it.
+**Scope:**
+- Create `FipsVpnService.kt` extending Android `VpnService`
+- Request VPN consent (system dialog)
+- Call `Builder.establish()` to get TUN fd
+- Pass fd to FIPS Rust core via UniFFI/JNI
+- Foreground service with persistent notification (survives Doze)
+- AndroidManifest: `BIND_VPN_SERVICE` permission
+- `FipsService.kt` already stubbed in plan — wire it
+**Dependencies:** B1 (FIPS compiles for Android)
+**Acceptance:** App starts FIPS node, VpnService consent dialog appears, FIPS session establishes. Logcat shows Noise XK handshake.
+**Effort:** 2 sessions
+**Repo:** tollgate-android (Kotlin + Rust)
+
+---
+
+### B3: FIPS Node Lifecycle + Reconnect
+
+**Problem:** FIPS v0.4.0 has no reconnect logic. App must manage lifecycle.
+**Scope:**
+- Start/stop FIPS node from app UI (toggle in Settings or Status screen)
+- Generate FIPS config programmatically (identity, peers, transports)
+- Store nsec in Android Keystore (hardware-backed if available)
+- Reconnect loop: 5s → 10s → 20s → 40s → 60s (capped)
+- Status reporting: connected peers, session state, bytes transferred
+- Surface status via `poll_event()` → UiState
+**Dependencies:** B2 (VpnService)
+**Acceptance:** Phone connects to VPS1 FIPS exit (UDP :2121). Logcat shows "Session established". Disconnect → auto-reconnect within 60s.
+**Effort:** 1-2 sessions
+**Repo:** tollgate-android (Rust + Kotlin)
+
+---
+
+## WORKSTREAM C: Vendor Mode (Phone Sells Internet)
+
+### C1: TollGate Server on Phone
+
+**Problem:** App is customer-only. Needs server logic for vendor mode.
+**Scope:**
+- Run `tollgate-net` server logic on phone (in Rust, behind UniFFI)
+- Accept incoming connections from FIPS mesh peers
+- Validate Cashu payments from peers
+- Create metered sessions for paying peers
+- Track bytes/seconds delivered per peer
+- Expose via UniFFI: `vendor_start()`, `vendor_stop()`, `vendor_status() -> VendorState`
+**Dependencies:** B3 (FIPS lifecycle working)
+**Acceptance:** Unit test: peer connects, pays, session starts, bytes metered.
+**Effort:** 2 sessions
+**Repo:** tollgate-android (Rust core)
+
+---
+
+### C2: WiFi Hotspot + Traffic Relay
+
+**Problem:** Phone must relay customer traffic through FIPS tunnel.
+**Scope:**
+- Android WiFi hotspot API (or VpnService routing)
+- Route customer traffic → FIPS tunnel → VPS1 → internet
+- Per-client control: only paying customers get relayed
+- Track per-client data usage
+**Dependencies:** C1 (server logic), B3 (FIPS tunnel)
+**Acceptance:** Laptop on phone hotspot → pays Cashu → gets internet through VPS1.
+**Effort:** 2 sessions
+**Repo:** tollgate-android (Kotlin + Rust)
+
+---
+
+### C3: Vendor Pricing + Earnings UI
+
+**Problem:** No vendor-facing UI.
+**Scope:**
+- Pricing screen: set per-second, per-byte rates, accepted mints
+- Earnings dashboard: sats earned, active sessions, peer list
+- Vendor on/off toggle
+- FIPS advertisement: publish kind 30078 with pricing when vendor mode active
+**Dependencies:** C1, C2
+**Acceptance:** Vendor screen shows pricing, toggle works, earnings update in real-time.
+**Effort:** 1-2 sessions
+**Repo:** tollgate-android (Kotlin)
+
+---
+
+## WORKSTREAM D: Physical Routers (INDEPENDENT)
+
+### D1: Flash Routers with OpenWRT
+
+**Scope:**
+- Two physical routers on interfaces:
+  - enp0s31f6 (192.168.1.200) — LAN
+  - enx00e04c390818 (10.47.41.203) — USB Ethernet
+- Flash OpenWRT 25.x (or latest stable)
+- Configure WiFi AP + WAN
+**Dependencies:** None
+**Acceptance:** Both routers boot OpenWRT, accessible via web UI.
+**Effort:** 1 session (physical work)
+**Note:** These are currently T470 network interfaces, not standalone routers. Clarify with operator: are these actual router devices to flash, or T470 interfaces to run tollgate-module-basic-go on?
+
+---
+
+### D2: Install tollgate-wrt Package
+
+**Scope:**
+- Fetch latest tollgate-wrt package via Nostr (kind 1063 from CI pubkey)
+- Install on both routers
+- Configure: testnut.cashu.space mint, pricing, captive portal
+- Reseller mode OFF
+**Dependencies:** D1
+**Acceptance:** Phone connects to router WiFi → captive portal → pays Cashu → internet works.
+**Effort:** 1 session
+
+---
+
+### D3: Build FIPS OpenWRT Package
+
+**Scope:**
+- Cross-compile FIPS daemon for OpenWRT architectures (aarch64_cortex-a53, mips_24kc)
+- Create .ipk/.apk package
+- OpenWRT feed entry or standalone package
+- Config template for VPS1 peering
+**Dependencies:** None (can start immediately, parallel with everything)
+**Acceptance:** `opkg install fips` works on OpenWRT. FIPS daemon starts, connects to VPS1.
+**Effort:** 2-3 sessions
+**Repo:** fork of jmcorgan/fips + packaging scripts
+
+---
+
+### D4: Configure Router FIPS to VPS1
+
+**Scope:**
+- FIPS config: peer to VPS1 exit (npub1mqelkzqp4659..., 66.92.204.38:2121)
+- Nostr discovery enabled, advertise true
+- WireGuard tunnel to VPS1 wg0
+- nftables MASQUERADE for paid_peers
+**Dependencies:** D3 (FIPS package), E1 (VPS1 nostr fix)
+**Acceptance:** Router FIPS node connects to VPS1. Phone → router → VPS1 → internet.
+**Effort:** 1 session
+
+---
+
+## WORKSTREAM E: VPS1 Infrastructure (INDEPENDENT)
+
+### E1: Debug VPS1 FIPS Nostr Advert Timeout
+
+**Problem:** VPS1 log shows `Nostr traversal advert publish timed out timeout_ms=10000`
+**Scope:**
+- SSH to VPS1, check FIPS logs
+- Test relay connectivity from VPS1 (wss://relay1.orangesync.tech etc.)
+- Check if FIPS advert_relays are reachable
+- Fix and verify route adverts publish successfully
+**Dependencies:** None
+**Acceptance:** `nak req -k 30078` from VPS1's npub returns route advert events.
+**Effort:** 1 session
+**Machine:** SSH to 66.92.204.38
+
+---
+
+### E2: Verify VPS1 Cashu Paygate
+
+**Problem:** nftables paid_peers set starts empty. Need to verify paygate REST endpoint works.
+**Scope:**
+- Check if fips-paygate is running on VPS1
+- Test: send Cashu token → verify IP added to paid_peers set
+- Test: timeout expires → IP removed
+- Verify end-to-end: FIPS peer → pay → internet egress works
+**Dependencies:** None
+**Acceptance:** Cashu payment → nftables rule added → internet flows. Timeout → removed.
+**Effort:** 1 session
+**Machine:** SSH to 66.92.204.38
+
+---
+
+## WORKSTREAM F: Auto-Discovery (AFTER B-TRACK)
+
+### F1: WiFi SSID Scan
+
+**Scope:**
+- Kotlin `WifiManager.startScan()` + `BroadcastReceiver`
+- AndroidManifest: `ACCESS_FINE_LOCATION`, `ACCESS_WIFI_STATE`, `CHANGE_WIFI_STATE`
+- Runtime permission request (GrapheneOS-safe)
+- Filter SSIDs starting with `TollGate-`
+- Extract gateway info from SSID or DNS
+**Dependencies:** None (independent)
+**Acceptance:** Phone scans WiFi, finds `TollGate-*` SSID, shows in Discover list.
+**Effort:** 1 session
+**Repo:** tollgate-android (Kotlin)
+
+---
+
+### F2: FIPS Mesh Discovery
+
+**Scope:**
+- Query embedded FIPS node for known peers
+- Merge FIPS peers into Discover list alongside Nostr + WiFi results
+- Show transport type badge (FIPS vs TollGate v2 vs WiFi)
+**Dependencies:** B3 (FIPS lifecycle)
+**Acceptance:** FIPS peers appear in Discover list automatically.
+**Effort:** 1 session
+
+---
+
+### F3: Auto-Connect Orchestration
+
+**Scope:**
+- On app launch: run all discovery sources (FIPS mesh + Nostr + WiFi + seed list)
+- Every 60s while in foreground: refresh
+- Best peer selected by: signal strength → price → latency
+- If auto-connect enabled: detect → pay (auto-topup) → consume automatically
+- If payment fails: try next-best peer
+- Backoff on all-fail
+**Dependencies:** F1, F2, A4 (real payment)
+**Acceptance:** Phone auto-discovers, auto-pays, auto-connects with zero manual steps.
+**Effort:** 1-2 sessions
+
+---
+
+## WORKSTREAM G: Polish (LAST)
+
+### G1: Onboarding Flow
+First launch: generate identity, topup wallet, grant VPN permission.
+**Effort:** 1 session
+
+### G2: Foreground Service
+FIPS runs as foreground service, survives Doze, persistent notification.
+**Effort:** 1 session
+
+### G3: ZapStore Listing
+`zapstore.yaml`, screenshots, description for decentralized distribution.
+**Effort:** 1 session
+
+---
+
+## Task Summary Table
+
+| ID | Task | Depends On | Effort | Priority |
+|----|------|-----------|--------|----------|
+| A1 | Fix discovery (0/9 issue) | — | 1 sess | CRITICAL |
+| A2 | CDK Cashu wallet | — | 2 sess | CRITICAL |
+| A3 | Auto-topup logic | A2 | 1 sess | HIGH |
+| A4 | Payment flow wiring | A2,A3 | 1-2 sess | CRITICAL |
+| B1 | Patch FIPS for Android | — | 2-3 sess | CRITICAL (parallel) |
+| B2 | VpnService integration | B1 | 2 sess | HIGH |
+| B3 | FIPS lifecycle + reconnect | B2 | 1-2 sess | HIGH |
+| C1 | TollGate server on phone | B3 | 2 sess | MEDIUM |
+| C2 | Hotspot + traffic relay | C1,B3 | 2 sess | MEDIUM |
+| C3 | Vendor pricing + earnings UI | C1,C2 | 1-2 sess | MEDIUM |
+| D1 | Flash routers with OpenWRT | — | 1 sess | HIGH |
+| D2 | Install tollgate-wrt | D1 | 1 sess | HIGH |
+| D3 | Build FIPS OpenWRT package | — | 2-3 sess | MEDIUM |
+| D4 | Configure router FIPS | D3,E1 | 1 sess | MEDIUM |
+| E1 | VPS1 Nostr advert fix | — | 1 sess | HIGH |
+| E2 | VPS1 Cashu paygate verify | — | 1 sess | HIGH |
+| F1 | WiFi SSID scan | — | 1 sess | MEDIUM |
+| F2 | FIPS mesh discovery | B3 | 1 sess | MEDIUM |
+| F3 | Auto-connect orchestration | F1,F2,A4 | 1-2 sess | LOW |
+| G1 | Onboarding flow | A4,B3 | 1 sess | LOW |
+| G2 | Foreground service | B3 | 1 sess | LOW |
+| G3 | ZapStore listing | — | 1 sess | LOW |
+
+**Total: ~28-35 sessions across 7 workstreams**
+
+## Recommended Execution Order
+
+**Sprint 1 (parallel):**
+- A1: Fix discovery
+- A2: CDK wallet
+- B1: Patch FIPS for Android
+- D1: Flash routers
+- E1: VPS1 Nostr fix
+- E2: VPS1 paygate verify
+
+**Sprint 2 (parallel):**
+- A3: Auto-topup (needs A2)
+- A4: Payment wiring (needs A2)
+- B2: VpnService (needs B1)
+- D2: Install tollgate-wrt (needs D1)
+
+**Sprint 3 (parallel):**
+- B3: FIPS lifecycle (needs B2)
+- D3: FIPS OpenWRT package (parallel)
+
+**Sprint 4:**
+- C1: TollGate server (needs B3)
+- D4: Router FIPS config (needs D3, E1)
+- F1: WiFi scan (parallel)
+
+**Sprint 5+:**
+- C2, C3, F2, F3, G1-G3
 
 ## Key Constraints
 
-- **FIPS v0.4.0 ONLY** — do not track master (sans-io refactor incomplete)
-- **Android VpnService** for TUN — no root required, but user must grant VPN consent
-- **GrapheneOS hardening** — location permissions for WiFi scan, background execution limits
-- **testnut.cashu.space** — default testnet mint for development
-- **DQ05 for builds** — T470 OOM-kills cargo-ndk + Gradle
-- **Nostr relays** — relay1.orangesync.tech, relay.damus.io, nos.lol (same as VPS1)
-
-## Test Verification Vectors
-
-| Test | Expected Result |
-|------|----------------|
-| Phone discovers T470 gateway via Nostr | kind 30078 event found, URL probed, gateway detected |
-| Phone pays gateway with testnut token | Cashu token accepted, session started |
-| Phone consumes internet through gateway | HTTP request succeeds through tunnel |
-| Phone auto-toppus when balance low | New tokens minted, session renewed |
-| Phone in vendor mode accepts peer | FIPS connection established, peer pays, internet routed |
-| Router connects to VPS1 FIPS exit | Noise XK handshake, wg0 tunnel, internet egress |
-| Router resells to phone | Phone pays router, router pays VPS1, internet flows |
-
-## References
-
-- TollGate Android master plan: `~/plans/tollgate-android-master-plan.md`
-- FIPS transport layer doc: `docs/fips-transport-layer.md`
-- Build environment doc: `docs/build-environment.md`
-- FIPS handover: `~/repos/fips-exit-e2e/docs/HANDOVER-ANDROID-APP.md`
-- TollGate router module: `github.com/OpenTollGate/tollgate-module-basic-go`
-- Upstream FIPS: `github.com/jmcorgan/fips` tag v0.4.0
-- Myco reference app: `github.com/Origami74/myco` (FIPS Android template)
+- FIPS v0.4.0 ONLY (master is mid-refactor, will break)
+- Android VpnService for TUN (no root)
+- testnut.cashu.space for testnet ecash
+- DQ05 for builds (T470 OOM-kills cargo-ndk + Gradle)
+- Nostr relays: relay1.orangesync.tech, relay.damus.io, nos.lol
+- GrapheneOS: location permissions for WiFi scan, strict background limits
