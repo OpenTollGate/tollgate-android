@@ -10,10 +10,17 @@ authors.workspace = true
 crate-type = ["lib", "staticlib", "cdylib"]
 name = "tollgate_mobile"
 
+[features]
+default = []
+# Enable FIPS mesh integration (Linux host only — does not compile for Android).
+fips = ["dep:fips"]
+
 [dependencies]
 tollgate-protocol = { workspace = true }
-# FIPS path dep — wired in Phase 0, exercised by the embedded node in Phase 2.
-fips = { workspace = true }
+# FIPS path dep — optional, enabled via the "fips" feature. FIPS v0.4.0 does not
+# cross-compile to Android (Linux-only platform/TUN code). Phase 2 handles FIPS
+# integration; until then the core works via tollgate-rs HTTP protocol alone.
+fips = { workspace = true, optional = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
