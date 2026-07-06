@@ -14,6 +14,14 @@ const val DEFAULT_MINT: String = "https://mint.minibits.cash"
  */
 data class UiState(
     val ourPubkey: String = "",
+    /** Absolute path of the directory the Rust core persists identity (and
+     *  future wallet state) under — Android `context.filesDir`. Shown on the
+     *  Settings → Identity card so a user can locate their keys. */
+    val dataDir: String = "",
+    /** App version (BuildConfig.VERSION_NAME, e.g. "0.1.0") for About. */
+    val appVersion: String = "",
+    /** Short git SHA baked into the APK (BuildConfig.GIT_HASH) for About. */
+    val buildHash: String = "",
     val baseHost: String = "http://192.168.8.1:4747",
     val mintUrl: String = DEFAULT_MINT,
     val detected: DetectedView? = null,
