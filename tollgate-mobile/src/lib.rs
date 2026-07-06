@@ -38,6 +38,9 @@ use thiserror::Error;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 
+mod wallet;
+use wallet::CashuWallet;
+
 use tollgate_protocol::{
     Announce, BootstrapAck, BootstrapToken, MessageType, MeteringReport, PROTOCOL_VERSION,
     PriceSheet, PublicKey as TgPublicKey, Reject, decode_frames, encode_frame, frame, peek_type,

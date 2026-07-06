@@ -29,6 +29,8 @@ hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 cashu = { workspace = true }
+cdk = { workspace = true }
+cdk-redb = { workspace = true }
 secp256k1 = { workspace = true }
 tracing = { workspace = true }
 uniffi = { workspace = true }
