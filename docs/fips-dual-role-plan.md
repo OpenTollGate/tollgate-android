@@ -1,7 +1,7 @@
 # TollGate Android — Master Task Plan
 
 > Phone as customer AND vendor. FIPS is the valve. VPS1 is the exit.
-> Routers run TollGate + FIPS. Date: 2026-07-06 (rev 4: testing findings + embedder contract)
+> Routers run TollGate + FIPS. Date: 2026-07-06 (rev 5: myco-core reality check)
 
 ## Architecture (Reference)
 
@@ -58,11 +58,28 @@ TOLLGATE ROUTERS (OpenWRT)
 Why ble-v2 changes everything:
 - **Cross-compiles clean** to `aarch64-linux-android` (v0.4.0 had 15 errors)
 - `enable_app_owned_tun()` — TUN fd problem already SOLVED upstream
-- `AndroidBleBridge` + `AndroidRadio` trait — JNI byte-bridge, no JNI on hot path
+- `AndroidBleBridge` + `AndroidRadio` trait — JNI byte-bridge pattern
 - `PeerView` + `peer_views()` — lock-free peer list for UI
 - Protocol-identical to v0.4.0 (wire format, handshake, routing unchanged)
-- **myco-core** by Origami74 — WORKING Android embedder, fork it
 - Amperstrand endorsement: "android basics will be upstream soon, fine to rely on"
+
+## CRITICAL REALITY CHECK: myco-core Does NOT Exist as Code
+
+**Origami74/myco** (GitHub) is DESIGN PHASE ONLY. README states verbatim:
+> "Status: Design phase — not yet built. This repository currently holds the design docs and diagrams."
+
+The `myco-core` JNI embedder crate referenced in commit messages DOES NOT EXIST
+as written code. It is planned but unbuilt. This means:
+
+- The Rust-side APIs (enable_app_owned_tun, AndroidBleBridge, peer_views) are
+  COMPLETE, UNIT-TESTED, and ready to call.
+- The Kotlin/JNI layer that calls them DOES NOT EXIST anywhere.
+- Task B2 is NOT "fork myco-core" — it's "build the JNI embedder from scratch."
+
+**nostr-vpn (mmalmi):** 404. Dead link. Myco README referenced it but it doesn't exist.
+
+**gonuts-tollgate (Origami74):** Go Cashu wallet. Useful reference for router-side
+Cashu validation logic (Workstream D). Not Android-related.
 
 **Pointer doc:** `fips-exit-e2e/docs/ANDROID-LLM-POINTERS.md` (308 lines, full API signatures + line numbers)
 **Full handover:** `fips-exit-e2e/docs/HANDOVER-ANDROID-APP.md` (all stakeholder input consolidated)
@@ -79,6 +96,7 @@ Why ble-v2 changes everything:
 - **Dashboard:** Static HTML, not live. Accurate when written but doesn't auto-update.
 - **SMOKE-1 test:** 5 pytest tests. High quality code. Defaults to wrong IP (23.182.128.51).
 - **Crons:** Daily smoke at 06:00 + health monitoring every 15min (created today, haven't run yet).
+- **No CI pipeline. No multi-peer test. No Android test environment.**
 
 ## Dependency Graph
 
@@ -89,8 +107,8 @@ A1 (fix discovery) ────────────────────�
   │       │                                      ▲
   │       └──────────────────────────────────────┘
   │
-B1 (clone ble-v2, verify build) ── B2 (fork myco-core JNI layer)
-  │                                   │
+B1 (clone ble-v2, verify build) ── B2 (BUILD JNI embedder from scratch)
+  │                                   │   ← was "fork myco-core", NOW 3-5 sess
   ├── B3 (Android UDP transport) ◄────┘  (HARDEST TASK)
   │   │
   │   ├── B4 (VpnService + enable_app_owned_tun + 3 gotchas)
@@ -197,7 +215,7 @@ H5 (Android test env setup)                           (independent)
 - Cross-compile: `cargo build --target aarch64-linux-android --release`
 - Copy `libfips.so` to tollgate-android `jniLibs/arm64-v8a/`
 - If errors: they should be minor (ble-v2 is additive over v0.4.0)
-**Cross-compilation watch-outs (from Origami74):**
+**Cross-compilation watch-outs (from Origami74 commit messages):**
 - `ring` crate needs NDK C compiler (C/assembly crypto) — set CC env var
 - `nostr-sdk` may need `rustls-tls` instead of `native-tls` for Android
 - `tun` crate compiles but is UNUSED at runtime (app-owned TUN path skips it)
@@ -211,26 +229,42 @@ H5 (Android test env setup)                           (independent)
 
 ---
 
-### B2: Fork myco-core JNI Embedder
+### B2: Build JNI Embedder from Scratch
 
-**Problem:** Need the JNI layer that bridges Kotlin ↔ Rust FIPS core.
+**Problem:** myco-core does NOT exist as code. The JNI layer bridging Kotlin ↔ Rust
+           FIPS core must be written from scratch. The Rust interfaces are stable,
+           well-documented, and unit-tested — but the Kotlin/JNI glue is entirely new work.
 **Scope:**
-- Contact Origami74 (Arjen, Signal @1624e1bb-...) for myco-core access
-- Fork myco-core, extract:
-  - `Java_..._NativeCore_*` JNI exports
-  - `AndroidRadio` trait impl via JNI `call_method` on Kotlin `BleRadio`
-  - Kotlin BLE radio (scan, advertise, L2CAP listen/connect, socket read/write)
-  - VpnService ↔ FIPS TUN channel glue (uses `enable_app_owned_tun()`)
-- Adapt to TollGate namespace + UI
-- Key pattern: byte hot path NEVER calls JNI — uses channel bridge:
-  - Inbound: Kotlin calls `bridge.deliver_recv(ch_id, data)` (non-blocking push)
-  - Outbound: Kotlin calls `bridge.next_send(ch_id, timeout)` (blocking pull)
+- Write `Java_..._NativeCore_*` JNI exports in Rust (jni crate)
+  - `native_new(config_ptr) -> handle`
+  - `native_enable_app_owned_tun(handle) -> (tx_ptr, rx_ptr)`
+  - `native_control_read_handle(handle) -> read_handle_ptr`
+  - `native_start(handle)`
+  - `native_run_rx_loop(handle)`
+  - `native_stop(handle)`
+  - `native_peer_views(read_handle) -> Vec<PeerView>`
+- Write Kotlin `NativeCore.kt` companion that loads `libfips.so` and declares extern functions
+- Write Kotlin `BleRadio.kt` implementing the `AndroidRadio` trait surface:
+  - `listen() -> psm: Int` — open L2CAP server, return PSM
+  - `connect(connect_id: Long, addr: ByteArray, psm: Int)` — dial peer
+  - `start_advertising(psm: Int)` / `stop_advertising()`
+  - `start_scanning()` / `stop_scanning()`
+  - `close_channel(ch_id: Long)`
+- Write Kotlin↔Rust channel bridge:
+  - Inbound: Kotlin calls JNI `deliver_recv(ch_id, data)` (non-blocking push into tokio channels)
+  - Outbound: Kotlin writer thread calls JNI `next_send(ch_id, timeout)` (blocking pull with timeout)
+- Wire `set_android_ble_bridge()` injection before `Node::new()`
+- The byte hot path MUST NEVER call JNI — use the channel bridge only
 **Dependencies:** B1 (FIPS compiles)
-**Acceptance:** JNI layer compiles. Kotlin can instantiate FIPS Node, call `enable_app_owned_tun()`, receive channel pair.
-**Effort:** 1-2 sessions
-**Repo:** tollgate-android (Kotlin JNI layer)
-**Reference:** myco-core by Origami74
-**Pointer:** ANDROID-LLM-POINTERS.md §THE EMBEDDER PATTERN
+**Acceptance:** JNI layer compiles. Kotlin can instantiate FIPS Node, call `enable_app_owned_tun()`, receive channel pair. Mock BLE radio test passes.
+**Effort:** 3-5 sessions (was 1-2 when we thought myco-core existed)
+**Repo:** tollgate-android (Rust JNI layer + Kotlin)
+**Reference:** ble-v2 commit messages describe the contract in detail. Nostr-vpn (mmalmi) is dead — no reference implementation exists.
+**Pointer:** ANDROID-LLM-POINTERS.md §THE EMBEDDER PATTERN, §Android BLE Bridge
+
+**NOTE:** Contact Origami74 (Arjen, Signal @1624e1bb-...) — he has the DESIGN for myco-core
+and may share implementation notes or start building it. If he releases code while B2 is
+in progress, switch to forking it. Until then, assume building from scratch.
 
 ---
 
@@ -325,16 +359,16 @@ H5 (Android test env setup)                           (independent)
 
 **Problem:** BLE transport enables nearby peer mesh (phone↔phone). Optional for MVP.
 **Scope:**
-- Wire AndroidBleBridge from myco-core into TollGate
+- Wire AndroidBleBridge from B2 JNI layer into TollGate
 - Kotlin BleRadio: scan, advertise, L2CAP CoC listen/connect
 - FIPS BLE service UUID: `9c90b7902cc542c09f87c9cc40648f4c`
 - L2CAP PSM: `0x0085` (dynamic range — PSM rotation fix already in ble-v2 for RPAs)
 - BLE performance: ~200kbps up / ~500kbps down (for nearby mesh, NOT internet exit)
 - Outbound queue cap: 32 packets (tuned — bufferbloat fix already in ble-v2)
 - L2CAP stream reframing: Android byte-stream vs datagram (fix already in ble-v2)
-**Dependencies:** B2 (myco-core JNI layer)
+**Dependencies:** B2 (JNI layer with BLE bridge)
 **Acceptance:** Two phones discover each other via BLE, establish FIPS peer connection.
-**Effort:** 1 session
+**Effort:** 1 session (assuming B2 built the BLE bridge)
 **Priority:** LOW (UDP exit to VPS1 is more important than BLE mesh)
 **Repo:** tollgate-android (Kotlin BLE + Rust bridge)
 
@@ -432,6 +466,7 @@ H5 (Android test env setup)                           (independent)
 **Acceptance:** `opkg install fips` works on OpenWRT. FIPS daemon starts, connects to VPS1.
 **Effort:** 2-3 sessions
 **Repo:** fork of jmcorgan/fips (ble-v2) + packaging scripts
+**Note:** ble-v2 already has CI for OpenWRT packaging (commit messages mention .ipk/.apk Blossom upload)
 
 ---
 
@@ -663,7 +698,7 @@ Pin policy says "DO NOT track master" but binary is a dev build beyond the pinne
 | **A3** | Auto-topup logic | A2 | 1 sess | HIGH |
 | **A4** | Payment flow wiring | A2,A3 | 1-2 sess | CRITICAL |
 | **B1** | Clone ble-v2, verify cross-compile | — | 0.5 sess | CRITICAL |
-| **B2** | Fork myco-core JNI embedder | B1 | 1-2 sess | CRITICAL |
+| **B2** | BUILD JNI embedder from scratch | B1 | 3-5 sess | CRITICAL |
 | **B3** | Android UDP transport (HARDEST) | B1,B2 | 2-3 sess | CRITICAL |
 | **B4** | VpnService + 3 gotchas | B2,B3 | 1-2 sess | HIGH |
 | **B5** | FIPS lifecycle + reconnect | B4 | 1-2 sess | HIGH |
@@ -690,7 +725,7 @@ Pin policy says "DO NOT track master" but binary is a dev build beyond the pinne
 | **H5** | Android test env setup | — | 2 sess | HIGH |
 | **H6** | Dashboard live data | H1 | 1 sess | MEDIUM |
 
-**Total: ~33-43 sessions across 8 workstreams (A-H)**
+**Total: ~35-48 sessions across 8 workstreams (A-H)**
 
 ## Recommended Execution Order
 
@@ -701,19 +736,19 @@ Pin policy says "DO NOT track master" but binary is a dev build beyond the pinne
 - D1: Flash routers
 - E1: VPS1 Nostr fix
 - E2: VPS1 paygate verify
-- **H1: Fix VPS1 version drift** (quick win, real bug)
-- **H2: Fix SMOKE-1 default IP** (quick win, real bug)
-- Contact Origami74 for myco-core access (blocking B2)
+- H1: Fix VPS1 version drift (quick win, real bug)
+- H2: Fix SMOKE-1 default IP (quick win, real bug)
+- Contact Origami74 — ask if myco-core has any code yet, or implementation notes
 
 **Sprint 2 (parallel):**
 - A3: Auto-topup (needs A2)
 - A4: Payment wiring (needs A2)
-- B2: Fork myco-core JNI layer (needs B1)
+- B2: BUILD JNI embedder from scratch (needs B1) ← CRITICAL PATH, 3-5 sess
 - D2: Install tollgate-wrt (needs D1)
 - D3: FIPS OpenWRT package (parallel)
-- **H3: CI pipeline** (independent)
-- **H4: DQ05 KVM exit-node VM** (independent, DQ05 ready)
-- **H5: Android test env setup** (independent, DQ05 has KVM)
+- H3: CI pipeline (independent)
+- H4: DQ05 KVM exit-node VM (independent, DQ05 ready)
+- H5: Android test env setup (independent, DQ05 has KVM)
 
 **Sprint 3 (parallel):**
 - B3: Android UDP transport (needs B1,B2) ← CRITICAL PATH
@@ -723,7 +758,7 @@ Pin policy says "DO NOT track master" but binary is a dev build beyond the pinne
 - B4: VpnService + enable_app_owned_tun + 3 gotchas (needs B2,B3)
 - B5: FIPS lifecycle (needs B4)
 - D4: Router FIPS config (needs D3, E1)
-- **H6: Dashboard live data** (needs H1)
+- H6: Dashboard live data (needs H1)
 
 **Sprint 5:**
 - C1: TollGate server (needs B5)
@@ -732,10 +767,25 @@ Pin policy says "DO NOT track master" but binary is a dev build beyond the pinne
 **Sprint 6+:**
 - C2, C3, F2, F3, G1-G3
 
+## Critical Path Analysis
+
+```
+B1 (0.5) → B2 (3-5) → B3 (2-3) → B4 (1-2) → B5 (1-2) = 7.5-12.5 sessions
+```
+
+The critical path is entirely in Workstream B. B2 (JNI from scratch) is now
+the longest single task. Everything in C, F2, G1-G2 waits on B5.
+
+Parallel tracks that DON'T block on B:
+- A-track (customer payment) can ship independently
+- D-track (routers) ships independently
+- E-track (VPS1) ships independently
+- H-track (testing) ships independently
+
 ## Key Constraints
 
 - **FIPS ble-v2 ONLY** (commit 56062094). NOT v0.4.0 alone (no Android support). NOT master (sans-io refactor breaks everything).
-- **myco-core** is the reference embedder — fork it, don't reinvent. Contact Origami74.
+- **myco-core DOES NOT EXIST as code.** JNI embedder must be built from scratch (B2, 3-5 sessions). Contact Origami74 for design notes.
 - **Custom Android UDP transport** is the hardest task — ble-v2 gates out system UDP on Android.
 - Android VpnService for TUN (no root). Use `enable_app_owned_tun()` from ble-v2.
 - **No JNI on byte hot path** — use channel bridge pattern (deliver_recv/next_send).
@@ -759,10 +809,11 @@ Pin policy says "DO NOT track master" but binary is a dev build beyond the pinne
 - **Full handover:** `fips-exit-e2e/docs/HANDOVER-ANDROID-APP.md` (all stakeholder input consolidated)
 - **Build environment:** `docs/build-environment.md` (DQ05 setup)
 - **Transport layer:** `docs/fips-transport-layer.md` (Phase 2 integration guide)
+- **Myco design docs:** `github.com/Origami74/myco/docs/` (architecture, BLE interop, identity — DESIGN ONLY, no code)
 
 ## Contacts
 
 - **c08r4d0r** — project owner (Signal group: tollgate-native-android-app)
-- **Origami74 (Arjen)** — ble-v2 author, myco-core (working Android embedder). Signal @1624e1bb-94ef-46d1-b03b-f067ea320af9. MUST CONTACT for myco-core access.
+- **Origami74 (Arjen)** — ble-v2 author. Has myco DESIGN but no myco-core CODE yet. Signal @1624e1bb-94ef-46d1-b03b-f067ea320af9. Contact for implementation notes.
 - **jmcorgan** — FIPS upstream maintainer
 - **Amperstrand** — firmware collaborator (ESP32-C3, RP2040). Endorsed ble-v2.
