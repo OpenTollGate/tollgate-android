@@ -2674,9 +2674,9 @@ dependencies = [
 
 [[package]]
 name = "minicbor"
-version = "0.24.4"
+version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29be4f60e41fde478b36998b88821946aafac540e53591e76db53921a0cc225b"
+checksum = "c0452a60c1863c1f50b5f77cd295e8d2786849f35883f0b9e18e7e6e1b5691b0"
 dependencies = [
  "minicbor-derive",
 ]
@@ -4503,7 +4503,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -4814,6 +4814,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tollgate-core"
+version = "0.1.0"
+dependencies = [
+ "minicbor",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tollgate-mobile"
 version = "0.1.0"
 dependencies = [
@@ -4830,18 +4839,10 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "tollgate-protocol",
+ "tollgate-core",
  "tower",
  "tracing",
  "uniffi",
-]
-
-[[package]]
-name = "tollgate-protocol"
-version = "0.1.0"
-dependencies = [
- "minicbor",
- "sha2",
 ]
 
 [[package]]

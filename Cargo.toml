@@ -26,9 +26,10 @@ repository = "https://github.com/OpenTollGate/tollgate-rs"
 authors = ["TollGate contributors"]
 
 [workspace.dependencies]
-# Real wire types / product-id maths from tollgate-rs (path deps, absolute — the
+# Real wire types / product-id maths from tollgate-core (path deps, absolute — the
 # kanban workspace is nested deep under ~/.hermes, so relative paths are brittle).
-tollgate-protocol = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-protocol" }
+# Path dependencies for the tollgate-rs workspace crates.
+# NOTE: tollgate-protocol was merged into tollgate-core (restructured).
 tollgate-core = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-core" }
 # FIPS mesh protocol — optional at the consumer level (see tollgate-mobile/Cargo.toml).
 # FIPS v0.4.0 has Linux-only platform code (TUN, raw sockets) that does not

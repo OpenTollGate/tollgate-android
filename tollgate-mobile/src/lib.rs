@@ -39,12 +39,12 @@ use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 
 mod wallet;
-use wallet::CashuWallet;
 
-use tollgate_protocol::{
-    Announce, BootstrapAck, BootstrapToken, MessageType, MeteringReport, PROTOCOL_VERSION,
-    PriceSheet, PublicKey as TgPublicKey, Reject, decode_frames, encode_frame, frame, peek_type,
+use tollgate_core::protocol::{
+    Announce, BootstrapStatus, BootstrapToken, Message, MeteringReport,
+    PriceSheet, PubKey as TgPubKey,
 };
+use tollgate_core::framing::{decode_frame, encode_frame};
 
 // ---------------------------------------------------------------------------
 // UniFFI-exposed types
@@ -218,8 +218,8 @@ const PRICING_SCALE: u64 = 1000;
 const UNIT: &str = "bytes";
 
 /// POST already-framed `request` to the peer's exchange endpoint, return the
-/// decoded response message bodies.
-async fn exchange(base_url: &str, request: Vec<u8>) -> anyhow::Result<Vec<Vec<u8>>> {
+/// decoded response messages.
+async fn exchange(base_url: &str, request: Vec<u8>) -> anyhow::Result<Vec<Message>> {
     let endpoint = format!(
         "{}/tollgate/v1/exchange",
         base_url.trim_end_matches('/')
@@ -234,50 +234,50 @@ async fn exchange(base_url: &str, request: Vec<u8>) -> anyhow::Result<Vec<Vec<u8
         .error_for_status()
         .context("peer returned an error status")?;
     let bytes = resp.bytes().await.context("reading peer response")?;
-    let frames = decode_frames(&bytes).map_err(|e| anyhow!("bad framing: {e:?}"))?;
-    Ok(frames.into_iter().map(|f| f.to_vec()).collect())
+    decode_frame(&bytes).map_err(|e| anyhow!("bad framing: {e:?}"))
 }
 
-/// Our own Announce, encoded.
-fn our_announce(identity: &Identity) -> Vec<u8> {
-    let pubkey = TgPublicKey::from_bytes(identity.public_key.serialize());
-    Announce::new(PROTOCOL_VERSION, pubkey, UNIT, 0).encode()
+/// Our own Announce as a single-element frame.
+fn our_announce(identity: &Identity) -> Vec<Message> {
+    let pubkey = TgPubKey::from(identity.public_key.serialize());
+    vec![Message::Announce(Announce {
+        msg_type: 0,
+        protocol_version: 1u8,
+        pubkey,
+        unit: UNIT.to_string(),
+        capabilities: 0,
+    })]
 }
 
-fn find_announce(messages: &[Vec<u8>]) -> Option<Announce> {
-    messages
-        .iter()
-        .filter(|m| matches!(peek_type(m), Some(MessageType::Announce)))
-        .find_map(|m| Announce::decode(m).ok())
+fn find_announce(messages: &[Message]) -> Option<&Announce> {
+    messages.iter().find_map(|m| {
+        if let Message::Announce(a) = m { Some(a) } else { None }
+    })
 }
 
-fn find_price_sheet(messages: &[Vec<u8>]) -> Option<PriceSheet> {
-    messages
-        .iter()
-        .filter(|m| matches!(peek_type(m), Some(MessageType::PriceSheet)))
-        .find_map(|m| PriceSheet::decode(m).ok())
+fn find_price_sheet(messages: &[Message]) -> Option<&PriceSheet> {
+    messages.iter().find_map(|m| {
+        if let Message::PriceSheet(p) = m { Some(p) } else { None }
+    })
 }
 
-fn find_metering_report(messages: &[Vec<u8>]) -> Option<MeteringReport> {
-    messages
-        .iter()
-        .filter(|m| matches!(peek_type(m), Some(MessageType::MeteringReport)))
-        .find_map(|m| MeteringReport::decode(m).ok())
+fn find_metering_report(messages: &[Message]) -> Option<&MeteringReport> {
+    messages.iter().find_map(|m| {
+        if let Message::MeteringReport(r) = m { Some(r) } else { None }
+    })
 }
 
-fn balance_exhausted(messages: &[Vec<u8>]) -> bool {
-    messages
-        .iter()
-        .filter(|m| matches!(peek_type(m), Some(MessageType::Reject)))
-        .filter_map(|m| Reject::decode(m).ok())
-        .any(|r| r.is_balance_exhausted())
+fn balance_exhausted(messages: &[Message]) -> bool {
+    messages.iter().any(|m| {
+        if let Message::Reject(r) = m { r.rejected_type == 4 } else { false }
+    })
 }
 
 fn price_from_sheet(sheet: &PriceSheet) -> PriceView {
     sheet
         .products
         .first()
-        .and_then(|p| p.mints.first())
+        .and_then(|p| p.mint_options.first())
         .map(|m| PriceView {
             per_second: m.price_per_second,
             per_unit: m.price_per_unit,
@@ -287,15 +287,14 @@ fn price_from_sheet(sheet: &PriceSheet) -> PriceView {
 
 /// Send our Announce and learn the peer's identity + price.
 pub(crate) async fn detect(base_url: &str, identity: &Identity) -> anyhow::Result<Detected> {
-    let body =
-        frame(&our_announce(identity)).map_err(|e| anyhow!("framing our Announce: {e:?}"))?;
+    let body = encode_frame(&our_announce(identity))?;
     let messages = exchange(base_url, body).await?;
     let announce = find_announce(&messages).context("peer did not return an Announce")?;
     Ok(Detected {
-        pubkey_hex: hex::encode(announce.public_key().as_bytes()),
+        pubkey_hex: hex::encode(announce.pubkey.0),
         unit: announce.unit.clone(),
-        version: announce.version,
-        price: find_price_sheet(&messages).as_ref().map(price_from_sheet),
+        version: announce.protocol_version,
+        price: find_price_sheet(&messages).map(price_from_sheet),
     })
 }
 
@@ -308,26 +307,30 @@ pub(crate) async fn pay(
 ) -> anyhow::Result<Paid> {
     let token = build_bootstrap_token(mint_url, amount_sat).context("building bootstrap token")?;
 
-    let mut body = Vec::new();
-    let frame_err = |e| anyhow!("framing: {e:?}");
-    encode_frame(&our_announce(identity), &mut body).map_err(frame_err)?;
-    encode_frame(&BootstrapToken::new(token.into_bytes()).encode(), &mut body).map_err(frame_err)?;
+    // Build frame: Announce + BootstrapToken
+    let mut msgs = our_announce(identity);
+    msgs.push(Message::BootstrapToken(BootstrapToken {
+        msg_type: 7,
+        token: token.into_bytes(),
+    }));
+    let body = encode_frame(&msgs)?;
 
     let messages = exchange(base_url, body).await?;
     let peer_pubkey_hex = find_announce(&messages)
-        .map(|a| hex::encode(a.public_key().as_bytes()))
+        .map(|a| hex::encode(a.pubkey.0))
         .context("peer did not return an Announce")?;
     let ack = messages
         .iter()
-        .filter(|m| matches!(peek_type(m), Some(MessageType::BootstrapAck)))
-        .find_map(|m| BootstrapAck::decode(m).ok())
+        .find_map(|m| {
+            if let Message::BootstrapAck(a) = m { Some(a.clone()) } else { None }
+        })
         .context("peer did not return a BootstrapAck")?;
 
     Ok(Paid {
         peer_pubkey_hex,
-        accepted: ack.is_accepted(),
+        accepted: ack.status == BootstrapStatus::Accepted,
         reason: ack.reason,
-        price: find_price_sheet(&messages).as_ref().map(price_from_sheet),
+        price: find_price_sheet(&messages).map(price_from_sheet),
     })
 }
 
@@ -384,12 +387,20 @@ pub(crate) async fn run_consume(
         }
 
         // Re-announce to collect queued frames + echo our receive count back.
-        let mut body = Vec::new();
-        encode_frame(&our_announce(identity), &mut body)
+        let mut body = encode_frame(&our_announce(identity))
             .map_err(|e| anyhow!("framing our Announce: {e:?}"))?;
         if acked_received > 0 {
-            let ack = MeteringReport::new(0, 0, acked_received).encode();
-            encode_frame(&ack, &mut body).map_err(|e| anyhow!("framing our MeteringReport: {e:?}"))?;
+            let ack_msg = Message::MeteringReport(MeteringReport {
+                msg_type: 4,
+                elapsed_ms: 0,
+                delivered: 0,
+                received: acked_received,
+                new_product_id: None,
+                new_pricing: None,
+            });
+            let ack_bytes = encode_frame(&[ack_msg])
+                .map_err(|e| anyhow!("framing our MeteringReport: {e:?}"))?;
+            body.extend(ack_bytes);
         }
         let messages = exchange(base_url, body).await?;
         let cut_off = balance_exhausted(&messages);
