@@ -16,10 +16,12 @@ default = []
 fips = ["dep:fips"]
 
 [dependencies]
-tollgate-protocol = { workspace = true }
-# FIPS path dep — optional, enabled via the "fips" feature. FIPS v0.4.0 does not
+# tollgate-protocol was merged into tollgate-core (June 2026).
+# Use tollgate_core::protocol for wire types, tollgate_core::framing for encode/decode.
+tollgate-core = { workspace = true }
+# FIPS mesh protocol — optional, enabled via the "fips" feature. FIPS v0.4.0 does not
 # cross-compile to Android (Linux-only platform/TUN code). Phase 2 handles FIPS
-# integration; until then the core works via tollgate-rs HTTP protocol alone.
+# integration; until then the core works via tollgate-core HTTP protocol alone.
 fips = { workspace = true, optional = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
@@ -41,4 +43,5 @@ uniffi = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread", "macros"] }
-tollgate-protocol = { workspace = true }
+tollgate-core = { workspace = true }
+tempfile = "3"
