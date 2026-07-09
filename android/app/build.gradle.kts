@@ -48,6 +48,13 @@ android {
     }
 }
 
+// Configure Java toolchain to use a compatible Java version
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(17))
+    }
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
