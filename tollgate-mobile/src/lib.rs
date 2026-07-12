@@ -664,32 +664,3 @@ impl TollgateMobileNode {
         // the Kotlin thread); poll_event returning None signals completion.
     }
 }
-pub mod nostr_discovery;
-// Applesauce discovery exports will be added here
-
-    // --- Applesauce Discovery Methods ---
-    
-    /// Get list of available FIPS exit nodes (from Nostr discovery)
-    pub fn fips_exit_nodes(&self) -> Result<Vec<FipsExitNodeInfo>, TollgateError> {
-        let discovery = NostrDiscovery::new(DiscoveryConfig::default())
-            .map_err(|e| TollgateError::Other { message: e.to_string() })?;
-        
-        self.runtime.block_on(discovery.discover_exit_nodes())
-            .map_err(|e| TollgateError::Other { message: e.to_string() })
-    }
-    
-    /// Get the best exit node (highest score, lowest latency)
-    pub fn get_best_exit_node(&self) -> Option<FipsExitNodeInfo> {
-        let discovery = NostrDiscovery::new(DiscoveryConfig::default()).ok()?;
-        discovery.get_best_exit_node()
-    }
-    
-    /// Start background exit node discovery sync
-    pub fn start_background_discovery(&self) -> Result<(), TollgateError> {
-        let discovery = NostrDiscovery::new(DiscoveryConfig::default())
-            .map_err(|e| TollgateError::Other { message: e.to_string() })?;
-        
-        discovery.start_background_sync()
-            .map_err(|e| TollgateError::Other { message: e.to_string() })
-    }
-}
