@@ -137,6 +137,72 @@ object V1GatewayClient {
         }
     }
 
+    /**
+     * Query session balance from the gateway.
+     * GET /balance → JSON with session_active, usage, allotment, remaining.
+     * The gateway identifies the device by MAC (from ARP table), so no
+     * auth needed — just be on the router's network.
+     */
+    data class Balance(
+        val sessionActive: Boolean,
+        val metric: String,
+        val usage: Long,
+        val allotment: Long,
+        val remaining: Long,
+        val startTime: Long,
+    )
+
+    fun getBalance(baseUrl: String): Balance? {
+        return try {
+            val cleanUrl = baseUrl.trimEnd('/')
+            val url = URL("$cleanUrl/balance")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = TIMEOUT_MS
+                readTimeout = TIMEOUT_MS
+            }
+            if (conn.responseCode != 200) return null
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            val json = JSONObject(body)
+            Balance(
+                sessionActive = json.optBoolean("session_active", false),
+                metric = json.optString("metric", "bytes"),
+                usage = json.optLong("usage", 0),
+                allotment = json.optLong("allotment", 0),
+                remaining = json.optLong("remaining", 0),
+                startTime = json.optLong("start_time", 0),
+            )
+        } catch (e: Exception) {
+            Log.d(TAG, "getBalance $baseUrl failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Get the device's MAC address as seen by the gateway.
+     * GET /whoami → "mac=XX:XX:XX:XX:XX:XX"
+     * Useful for debugging and for the gateway to identify the device.
+     */
+    fun getWhoami(baseUrl: String): String? {
+        return try {
+            val cleanUrl = baseUrl.trimEnd('/')
+            val url = URL("$cleanUrl/whoami")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = TIMEOUT_MS
+                readTimeout = TIMEOUT_MS
+            }
+            if (conn.responseCode != 200) return null
+            val body = conn.inputStream.bufferedReader().readText().trim()
+            conn.disconnect()
+            // Format: "mac=XX:XX:XX:XX:XX:XX"
+            body.removePrefix("mac=").ifBlank { null }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     private fun parseAdvertisement(body: String): Advertisement? {
         return try {
             val json = JSONObject(body)

@@ -242,6 +242,14 @@ private fun PeerCard(peer: DiscoveredPeer, onConnect: () -> Unit) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline,
                 )
+                if (peer.acceptedMints.isNotEmpty()) {
+                    Text(
+                        "${peer.acceptedMints.size} mint${if (peer.acceptedMints.size == 1) "" else "s"}: ${peer.acceptedMints.joinToString(", ") { stripScheme(it) }}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
             }
             Button(onClick = onConnect) { Text("Connect") }
         }

@@ -73,6 +73,40 @@ fun StatusScreen(
 
             SessionCard(state = state)
 
+            // V1 gateway balance card — shows live usage from /balance endpoint
+            state.gatewayBalance?.let { bal ->
+                InfoCard(title = "Gateway session") {
+                    TelemetryRow(label = "status", value = if (bal.sessionActive) "active" else "no session")
+                    if (bal.sessionActive) {
+                        TelemetryRow(label = "used", value = formatBytes(bal.usage))
+                        TelemetryRow(label = "allotment", value = formatBytes(bal.allotment))
+                        TelemetryRow(label = "remaining", value = formatBytes(bal.remaining))
+                        val pct = if (bal.allotment > 0) (bal.usage * 100 / bal.allotment) else 0
+                        TelemetryRow(label = "used %", value = "$pct%")
+                        TelemetryRow(label = "metric", value = bal.metric)
+                    }
+                }
+            }
+
+            // Gateway info card — accepted mints, MAC, price
+            if (state.gatewayMints.isNotEmpty() || state.gatewayMac != null) {
+                InfoCard(title = "Gateway info") {
+                    state.gatewayMac?.let {
+                        TelemetryRow(label = "your MAC", value = it)
+                    }
+                    if (state.gatewayMints.isNotEmpty()) {
+                        TelemetryRow(label = "accepted mints", value = "${state.gatewayMints.size}")
+                        state.gatewayMints.forEach { mint ->
+                            Text(
+                                "  $mint",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline,
+                            )
+                        }
+                    }
+                }
+            }
+
             state.detected?.let { d ->
                 if (d.perUnit != null || d.perSecond != null) {
                     InfoCard(title = "Price") {

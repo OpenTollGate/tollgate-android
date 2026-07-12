@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import org.opentollgate.android.model.BalanceView
 import org.opentollgate.android.model.ConsumeEventView
 import org.opentollgate.android.model.DetectedView
 import org.opentollgate.android.model.DiscoveredPeer
@@ -95,10 +96,17 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
         // Try v1 HTTP first (production routers), fall back to v2 CBOR
         val v1Ad = V1GatewayClient.detect(host)
         if (v1Ad != null) {
-            // Update known mints from the gateway's advertisement
+            // Query device MAC and update all gateway state
+            val mac = V1GatewayClient.getWhoami(host)
             val gatewayMints = v1Ad.mints.filter { it.isNotBlank() }
+            // Merge gateway mints into known mints
             _state.update {
-                val mints = (it.knownMints + gatewayMints).distinct()
+                val mergedMints = (it.knownMints + gatewayMints).distinct()
+                val preferredMint = when {
+                    gatewayMints.isEmpty() -> it.mintUrl
+                    it.mintUrl in gatewayMints -> it.mintUrl
+                    else -> gatewayMints.first()
+                }
                 it.copy(
                     detected = DetectedView(
                         pubkeyHex = v1Ad.pubkeyHex,
@@ -108,10 +116,15 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                         perSecond = null,
                     ),
                     online = true,
-                    knownMints = mints,
+                    knownMints = mergedMints,
+                    mintUrl = preferredMint,
+                    gatewayMints = gatewayMints,
+                    gatewayMac = mac,
                     error = null,
                 )
             }
+            // Query initial balance
+            refreshGatewayBalance()
         } else {
             // Fall back to v2 CBOR protocol
             runCatching { node.detect(host) }
@@ -124,6 +137,28 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 .onFailure { e -> _state.update { it.copy(error = e.message ?: "detect failed", online = false) } }
+        }
+    }
+
+    /** Poll the gateway's /balance endpoint for live session telemetry. */
+    private fun refreshGatewayBalance() {
+        val host = state.value.baseHost
+        viewModelScope.launch(Dispatchers.IO) {
+            val bal = V1GatewayClient.getBalance(host)
+            if (bal != null) {
+                _state.update {
+                    it.copy(
+                        gatewayBalance = BalanceView(
+                            sessionActive = bal.sessionActive,
+                            metric = bal.metric,
+                            usage = bal.usage,
+                            allotment = bal.allotment,
+                            remaining = bal.remaining,
+                            startTime = bal.startTime,
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -149,8 +184,9 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (result.accepted) {
                     // V1 gateways manage access via the router firewall — no consume loop needed.
-                    // Start a usage monitor instead.
+                    // Start a balance polling loop to show live session telemetry.
                     _state.update { it.copy(sessionStartedAt = System.currentTimeMillis()) }
+                    startBalanceMonitor()
                 }
             } else {
                 // Fall back to v2 CBOR protocol
@@ -222,8 +258,58 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Outstanding balance monitor job (v1 gateway /balance polling). */
+    private var balanceJob: Job? = null
+
+    /** Cancel the balance monitor (the Stop button or session end). */
+    private fun stopBalanceMonitor() {
+        balanceJob?.cancel()
+        balanceJob = null
+    }
+
+    /**
+     * Poll the gateway's /balance endpoint every 3 seconds for live session
+     * telemetry (usage, remaining, session_active). Stops when the session
+     * becomes inactive or the user cancels. Only used for v1 HTTP gateways —
+     * v2 CBOR gateways use the consume loop's MeteringReport events.
+     */
+    private fun startBalanceMonitor() {
+        stopBalanceMonitor()
+        balanceJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                while (true) {
+                    val host = state.value.baseHost
+                    val bal = V1GatewayClient.getBalance(host)
+                    if (bal != null) {
+                        _state.update {
+                            it.copy(
+                                gatewayBalance = BalanceView(
+                                    sessionActive = bal.sessionActive,
+                                    metric = bal.metric,
+                                    usage = bal.usage,
+                                    allotment = bal.allotment,
+                                    remaining = bal.remaining,
+                                    startTime = bal.startTime,
+                                ),
+                                // If session ended server-side, clear our session marker
+                                sessionStartedAt = if (bal.sessionActive) it.sessionStartedAt else null,
+                            )
+                        }
+                        if (!bal.sessionActive) break
+                    }
+                    kotlinx.coroutines.delay(3000L)
+                }
+            } catch (_: CancellationException) {
+                // Stopped by user — keep the last known balance
+            } finally {
+                _state.update { it.copy(sessionStartedAt = null) }
+            }
+        }
+    }
+
     fun onStop() {
         runCatching { node.stopConsume() }
+        stopBalanceMonitor()
         _state.update { it.copy(sessionStartedAt = null) }
     }
 
@@ -322,6 +408,16 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun onSelectPeer(peer: DiscoveredPeer) {
         _state.update {
+            // Merge the gateway's accepted mints into knownMints so PayScreen
+            // shows exactly what this router accepts (queried from GET /).
+            val mergedMints = (it.knownMints + peer.acceptedMints).distinct()
+            // Auto-select the first gateway-accepted mint if current selection
+            // isn't in the gateway's list.
+            val preferredMint = when {
+                peer.acceptedMints.isEmpty() -> it.mintUrl
+                it.mintUrl in peer.acceptedMints -> it.mintUrl
+                else -> peer.acceptedMints.first()
+            }
             it.copy(
                 baseHost = peer.baseUrl,
                 detected = if (peer.reachable) {
@@ -336,6 +432,8 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                     it.detected
                 },
                 online = peer.reachable,
+                knownMints = mergedMints,
+                mintUrl = preferredMint,
                 error = null,
             )
         }
@@ -374,6 +472,8 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                 version = 1.toUByte(),
                 perUnit = v1Ad.pricePerStep,
                 perSecond = null,
+                acceptedMints = v1Ad.mints,
+                stepSize = v1Ad.stepSize,
             )
         }
 

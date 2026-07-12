@@ -34,6 +34,11 @@ data class DiscoveredPeer(
     val perUnit: Long?,
     /** Per-second price (scaled milli-sats), or null if the peer published none. */
     val perSecond: Long?,
+    /** Cashu mints accepted by this gateway (from advertisement). Empty when
+     *  unreachable or v2 CBOR (which doesn't expose mints in detect). */
+    val acceptedMints: List<String> = emptyList(),
+    /** Step size in bytes/milliseconds (from advertisement). 0 when unknown. */
+    val stepSize: Long = 0L,
 )
 
 /**

@@ -68,6 +68,12 @@ data class UiState(
     val scanning: Boolean = false,
     /** Cashu token pasted by user for v1 gateway payment. */
     val paymentToken: String? = null,
+    /** Gateway-accepted mints from advertisement (GET /). Updated on detect/discover. */
+    val gatewayMints: List<String> = emptyList(),
+    /** Device MAC as seen by the gateway (from /whoami). Null until queried. */
+    val gatewayMac: String? = null,
+    /** Live session balance from gateway (GET /balance). Null when no session. */
+    val gatewayBalance: BalanceView? = null,
     /** Last Discover-scan error (per-host reachability is folded into each
      *  DiscoveredPeer; this holds only a whole-scan failure). */
     val discoverError: String? = null,
@@ -90,4 +96,14 @@ data class ConsumeEventView(
     val delivered: Long?,
     val cutOff: Boolean,
     val toppedUp: Boolean,
+)
+
+/** Live session telemetry from a v1 gateway's /balance endpoint. */
+data class BalanceView(
+    val sessionActive: Boolean,
+    val metric: String,
+    val usage: Long,
+    val allotment: Long,
+    val remaining: Long,
+    val startTime: Long,
 )
