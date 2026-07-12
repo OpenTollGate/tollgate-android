@@ -105,6 +105,7 @@ object V1GatewayClient {
     fun pay(baseUrl: String, cashuToken: String, network: Network? = null): PaymentResult {
         return try {
             val cleanUrl = baseUrl.trimEnd('/')
+            Log.d(TAG, "pay: POST $cleanUrl/ token=${cashuToken.take(30)}... network=$network")
             val conn = openConnection("$cleanUrl/", network).apply {
                 requestMethod = "POST"
                 connectTimeout = TIMEOUT_MS
@@ -114,11 +115,13 @@ object V1GatewayClient {
             }
             conn.outputStream.use { it.write(cashuToken.toByteArray()) }
             val code = conn.responseCode
+            Log.d(TAG, "pay: HTTP $code")
             val body = if (code in 200..299) {
                 conn.inputStream.bufferedReader().readText()
             } else {
                 conn.errorStream?.bufferedReader()?.readText() ?: "{}"
             }
+            Log.d(TAG, "pay: response body=${body.take(300)}")
             conn.disconnect()
 
             // Response is a Nostr event (kind 1022 = session, 21023 = notice/error)

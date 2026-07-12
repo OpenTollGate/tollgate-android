@@ -1,6 +1,7 @@
 package org.opentollgate.android
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -48,6 +49,9 @@ import uniffi.tollgate_mobile.TollgateMobileNode
  * The detect/pay/consume plumbing below is already wired end to end.
  */
 class TollgateViewModel(app: Application) : AndroidViewModel(app) {
+    private companion object {
+        const val TAG = "TollgateViewModel"
+    }
     private val node: TollgateMobileNode = TollgateMobileNode(app.filesDir.absolutePath)
     private val wifiScanner = WifiTollGateScanner(app)
     val wifiConnector = WifiNetworkConnector(app)
@@ -299,18 +303,23 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val s = state.value
 
-            // If no Cashu token pasted, error immediately
-            if (s.paymentToken.isNullOrBlank()) {
-                _state.update { it.copy(error = "Paste a Cashu token from ${s.mintUrl} to pay") }
+            // Use mintedToken from minting flow, or fall back to manually pasted token
+            val token = s.mintedToken ?: s.paymentToken
+            if (token.isNullOrBlank()) {
+                _state.update { it.copy(error = "Mint tokens first (Get Invoice → pay Lightning → Mint), or paste a Cashu token manually") }
                 return@launch
             }
+            Log.i(TAG, "onPay: token=${token.take(40)}... gateway=${s.baseHost}")
 
             // Try v1 HTTP only (all production TollGate routers use :2121)
             val net = wifiConnector.activeNetwork.value
+            Log.d(TAG, "onPay: activeNetwork=$net")
             val v1Ad = V1GatewayClient.detect(s.baseHost, net)
             if (v1Ad != null) {
                 // V1 gateway: POST Cashu token directly
-                val result = V1GatewayClient.pay(s.baseHost, s.paymentToken!!, net)
+                Log.d(TAG, "onPay: gateway detected, posting token...")
+                val result = V1GatewayClient.pay(s.baseHost, token, net)
+                Log.i(TAG, "onPay: result accepted=${result.accepted} error=${result.error} body=${result.rawJson.take(200)}")
                 _state.update {
                     it.copy(
                         paid = PaidView(v1Ad.pubkeyHex, result.accepted, v1Ad.pricePerStep),
