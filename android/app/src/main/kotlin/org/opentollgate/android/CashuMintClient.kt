@@ -135,6 +135,14 @@ object CashuMintClient {
     )
 
     fun mintTokens(mintUrl: String, quoteId: String, totalAmount: Long): MintResult? {
+        // Fetch the active keyset ID for "sat" unit (NUT-02)
+        val keysetId = getActiveKeysetId(mintUrl)
+        if (keysetId == null) {
+            Log.e(TAG, "mintTokens: failed to fetch keyset ID from mint")
+            return null
+        }
+        Log.d(TAG, "mintTokens: using keysetId=$keysetId")
+
         // Split amount into powers of 2 (Cashu amount denomination)
         val amounts = splitAmount(totalAmount)
 
@@ -154,6 +162,7 @@ object CashuMintClient {
             blindingData.add(secretHex to r)
             blindedOutputs.add(JSONObject().apply {
                 put("amount", amt)
+                put("id", keysetId)
                 put("B_", bHex)
             })
         }
@@ -211,6 +220,48 @@ object CashuMintClient {
         // Build the Cashu token
         val token = buildToken(proofs, mintUrl)
         return MintResult(proofs = proofs, token = token)
+    }
+
+    // ── Keyset Discovery ──────────────────────────────────────────
+
+    /**
+     * Fetch the active keyset ID for "sat" unit from the mint.
+     * GET /v1/keysets → {"keysets": [{"id":"...", "unit":"sat", "active":true}, ...]}
+     */
+    private fun getActiveKeysetId(mintUrl: String): String? {
+        return try {
+            val url = URL("${mintUrl.trimEnd('/')}/v1/keysets")
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = TIMEOUT_MS
+                readTimeout = TIMEOUT_MS
+            }
+            if (conn.responseCode !in 200..299) {
+                Log.e(TAG, "getActiveKeysetId → HTTP ${conn.responseCode}")
+                return null
+            }
+            val resp = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+
+            val keysets = JSONObject(resp).optJSONArray("keysets") ?: return null
+            for (i in 0 until keysets.length()) {
+                val ks = keysets.optJSONObject(i) ?: continue
+                val unit = ks.optString("unit", "")
+                val active = ks.optBoolean("active", true)
+                if (unit == "sat" && active) {
+                    return ks.getString("id")
+                }
+            }
+            // Fallback: first keyset with sat unit
+            for (i in 0 until keysets.length()) {
+                val ks = keysets.optJSONObject(i) ?: continue
+                if (ks.optString("unit", "") == "sat") return ks.getString("id")
+            }
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "getActiveKeysetId failed: ${e.message}")
+            null
+        }
     }
 
     // ── Cashu Token Building ───────────────────────────────────────
