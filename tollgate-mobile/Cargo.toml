@@ -21,6 +21,7 @@ tollgate-protocol = { workspace = true }
 # cross-compile to Android (Linux-only platform/TUN code). Phase 2 handles FIPS
 # integration; until then the core works via tollgate-rs HTTP protocol alone.
 fips = { workspace = true, optional = true }
+jni = "0.21"
 tokio = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
@@ -32,6 +33,7 @@ cashu = { workspace = true }
 secp256k1 = { workspace = true }
 tracing = { workspace = true }
 uniffi = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 # In-process mock gateway for the integration test — same axum the real
