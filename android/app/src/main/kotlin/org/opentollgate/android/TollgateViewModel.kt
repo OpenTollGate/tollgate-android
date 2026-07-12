@@ -167,16 +167,18 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(paying = true, error = null) }
         try {
             val s = state.value
-            // Try v1 HTTP first (production routers)
+
+            // If no Cashu token pasted, error immediately
+            if (s.paymentToken.isNullOrBlank()) {
+                _state.update { it.copy(error = "Paste a Cashu token from ${s.mintUrl} to pay") }
+                return@launch
+            }
+
+            // Try v1 HTTP only (all production TollGate routers use :2121)
             val v1Ad = V1GatewayClient.detect(s.baseHost)
             if (v1Ad != null) {
                 // V1 gateway: POST Cashu token directly
-                val token = s.paymentToken
-                if (token.isNullOrBlank()) {
-                    _state.update { it.copy(error = "Paste a Cashu token from ${s.mintUrl} to pay") }
-                    return@launch
-                }
-                val result = V1GatewayClient.pay(s.baseHost, token)
+                val result = V1GatewayClient.pay(s.baseHost, s.paymentToken!!)
                 _state.update {
                     it.copy(
                         paid = PaidView(v1Ad.pubkeyHex, result.accepted, v1Ad.pricePerStep),
@@ -184,20 +186,18 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 }
                 if (result.accepted) {
-                    // V1 gateways manage access via the router firewall — no consume loop needed.
-                    // Start a balance polling loop to show live session telemetry.
                     _state.update { it.copy(sessionStartedAt = System.currentTimeMillis()) }
                     startBalanceMonitor()
                 }
             } else {
-                // Fall back to v2 CBOR protocol
-                runCatching { node.pay(s.baseHost, s.mintUrl, amountSat.toULong()) }
-                    .onSuccess { p ->
-                        _state.update { it.copy(paid = PaidView(p.peerPubkeyHex, p.accepted, p.price?.perUnit)) }
-                        if (p.accepted) startConsume()
-                    }
-                    .onFailure { e -> _state.update { it.copy(error = e.message ?: "pay failed") } }
+                // Gateway unreachable — phone is NOT on the TollGate WiFi
+                _state.update {
+                    it.copy(error = "Cannot reach gateway at ${s.baseHost}. " +
+                        "Connect to a TollGate WiFi network first (Discover → Connect).")
+                }
             }
+        } catch (e: Exception) {
+            _state.update { it.copy(error = e.message ?: "pay failed") }
         } finally {
             _state.update { it.copy(paying = false) }
         }
