@@ -9,6 +9,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -65,7 +67,134 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onHostChange(host: String) = _state.update { it.copy(baseHost = host) }
     fun onMintChange(mint: String) = _state.update { it.copy(mintUrl = mint) }
-    fun onTokenChange(token: String) = _state.update { it.copy(paymentToken = token.trim().ifBlank { null }) }
+    fun onTokenChange(token: String) = _state.update { it.copy(paymentToken = token) }
+
+    // ── Cashu Minting Flow ─────────────────────────────────────────
+
+    /** Polling job for checking Lightning payment status. */
+    private var quotePollJob: Job? = null
+
+    /**
+     * Step 1: Request a Lightning invoice from the selected mint.
+     * Called before connecting to TollGate WiFi (uses default internet).
+     */
+    fun onRequestInvoice() = viewModelScope.launch(Dispatchers.IO) {
+        val mint = state.value.mintUrl
+        val amount = state.value.amountSat.coerceAtLeast(1)
+
+        _state.update {
+            it.copy(
+                mintingInvoice = true,
+                error = null,
+                mintedToken = null,
+                mintInvoice = null,
+                mintQuoteId = null,
+            )
+        }
+
+        val quote = CashuMintClient.requestQuote(mint, amount)
+        if (quote == null) {
+            _state.update {
+                it.copy(
+                    mintingInvoice = false,
+                    error = "Failed to get Lightning invoice from $mint",
+                )
+            }
+            return@launch
+        }
+
+        _state.update {
+            it.copy(
+                mintingInvoice = false,
+                mintInvoice = quote.invoice,
+                mintQuoteId = quote.quoteId,
+                mintingWaiting = true,
+            )
+        }
+
+        // Start polling for payment
+        startQuotePolling(mint, quote.quoteId)
+    }
+
+    /**
+     * Step 2: Poll the mint every 5 seconds until the Lightning invoice is paid.
+     */
+    private fun startQuotePolling(mint: String, quoteId: String) {
+        quotePollJob?.cancel()
+        quotePollJob = viewModelScope.launch(Dispatchers.IO) {
+            var attempts = 0
+            val maxAttempts = 120 // 10 minutes max
+            while (isActive && attempts < maxAttempts) {
+                delay(5000)
+                val state = CashuMintClient.checkQuote(mint, quoteId)
+                if (state == "PAID") {
+                    // Payment confirmed — mint the tokens
+                    mintAfterPayment(mint, quoteId)
+                    return@launch
+                } else if (state == "EXPIRED") {
+                    _state.update {
+                        it.copy(
+                            mintingWaiting = false,
+                            error = "Lightning invoice expired. Try again.",
+                        )
+                    }
+                    return@launch
+                }
+                attempts++
+            }
+            // Timeout
+            _state.update {
+                it.copy(
+                    mintingWaiting = false,
+                    error = "Timed out waiting for payment. Try again.",
+                )
+            }
+        }
+    }
+
+    /**
+     * Step 3: Mint Cashu tokens after Lightning payment is confirmed.
+     */
+    private fun mintAfterPayment(mint: String, quoteId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(mintingWaiting = false, mintingTokens = true) }
+
+            val amount = state.value.amountSat
+            val result = CashuMintClient.mintTokens(mint, quoteId, amount)
+            if (result == null) {
+                _state.update {
+                    it.copy(
+                        mintingTokens = false,
+                        error = "Failed to mint Cashu tokens. Payment may have been processed.",
+                    )
+                }
+                return@launch
+            }
+
+            _state.update {
+                it.copy(
+                    mintingTokens = false,
+                    mintedToken = result.token,
+                    paymentToken = result.token,
+                    error = null,
+                )
+            }
+        }
+    }
+
+    /** Cancel any pending minting/polling. */
+    fun onCancelMinting() {
+        quotePollJob?.cancel()
+        _state.update {
+            it.copy(
+                mintingInvoice = false,
+                mintingWaiting = false,
+                mintingTokens = false,
+                mintInvoice = null,
+                mintQuoteId = null,
+            )
+        }
+    }
 
     /** Set the bootstrap-token amount (sats). Clamped to ≥ 1. */
     fun onAmountChange(sat: Long) = _state.update { it.copy(amountSat = sat.coerceAtLeast(1L)) }

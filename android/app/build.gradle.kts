@@ -98,5 +98,6 @@ dependencies {
     // Using explicit @aar notation — the artifact{} block syntax is unreliable
     // in some AGP versions and silently falls back to the JAR.
     implementation("net.java.dev.jna:jna:5.16.0@aar")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     debugImplementation(libs.compose.ui.tooling)
 }

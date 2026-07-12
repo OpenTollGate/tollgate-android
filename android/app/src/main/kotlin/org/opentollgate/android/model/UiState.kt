@@ -70,6 +70,18 @@ data class UiState(
     val paymentToken: String? = null,
     /** Gateway-accepted mints from advertisement (GET /). Updated on detect/discover. */
     val gatewayMints: List<String> = emptyList(),
+    /** Lightning invoice for Cashu minting (shown to user to pay). */
+    val mintInvoice: String? = null,
+    /** Cashu quote ID for polling payment status. */
+    val mintQuoteId: String? = null,
+    /** True while requesting a Lightning invoice from the mint. */
+    val mintingInvoice: Boolean = false,
+    /** True while polling for Lightning payment confirmation. */
+    val mintingWaiting: Boolean = false,
+    /** True while minting Cashu tokens after payment. */
+    val mintingTokens: Boolean = false,
+    /** Minted Cashu token ready for TollGate payment (null = not yet minted). */
+    val mintedToken: String? = null,
     /** Device MAC as seen by the gateway (from /whoami). Null until queried. */
     val gatewayMac: String? = null,
     /** Live session balance from gateway (GET /balance). Null when no session. */

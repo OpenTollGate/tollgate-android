@@ -118,6 +118,9 @@ fun TollGateApp(vm: TollgateViewModel) {
                         onAmountChange = vm::onAmountChange,
                         onTokenChange = vm::onTokenChange,
                         onPay = { vm.onPay() },
+                        onStop = vm::onStop,
+                        onRequestInvoice = vm::onRequestInvoice,
+                        onCancelMinting = vm::onCancelMinting,
                     )
                 }
                 composable("wallet") {

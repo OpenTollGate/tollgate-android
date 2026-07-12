@@ -11,19 +11,26 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -79,8 +86,11 @@ fun PayScreen(
     onSelectMint: (String) -> Unit,
     onAddMint: (String) -> Unit,
     onAmountChange: (Long) -> Unit,
-    onTokenChange: (String) -> Unit,
     onPay: () -> Unit,
+    onStop: () -> Unit,
+    onTokenChange: (String) -> Unit,
+    onRequestInvoice: () -> Unit,
+    onCancelMinting: () -> Unit,
 ) {
     Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Pay") }) }) { pad ->
         Column(
@@ -96,8 +106,16 @@ fun PayScreen(
                 if (d.perUnit != null || d.perSecond != null) PriceCard(state = state)
             }
             MintCard(state = state, onSelectMint = onSelectMint, onAddMint = onAddMint)
-            TokenCard(state = state, onTokenChange = onTokenChange)
             AmountCard(state = state, onAmountChange = onAmountChange)
+
+            // Cashu minting section — get Lightning invoice, pay, mint tokens
+            MintingCard(
+                state = state,
+                onRequestInvoice = onRequestInvoice,
+                onCancelMinting = onCancelMinting,
+            )
+
+            TokenCard(state = state, onTokenChange = onTokenChange)
             PayButton(state = state, onPay = onPay)
             PayResult(state = state)
         }
@@ -204,6 +222,106 @@ private fun MintCard(state: UiState, onSelectMint: (String) -> Unit, onAddMint: 
                 },
                 enabled = newMint.isNotBlank(),
             ) { Text("Add") }
+        }
+    }
+}
+
+@Composable
+private fun MintingCard(
+    state: UiState,
+    onRequestInvoice: () -> Unit,
+    onCancelMinting: () -> Unit,
+) {
+    InfoCard(title = "Get Cashu e-cash") {
+        Text(
+            "Mint ${state.amountSat} sats of e-cash from ${state.mintUrl.removePrefix("https://")}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        when {
+            // Step 1: No invoice yet — show "Get Invoice" button
+            state.mintInvoice == null && !state.mintingInvoice -> {
+                Button(
+                    onClick = onRequestInvoice,
+                    enabled = !state.mintingWaiting && !state.mintingTokens,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Filled.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Get Lightning Invoice (${state.amountSat} sats)")
+                }
+            }
+
+            // Requesting invoice...
+            state.mintingInvoice -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Requesting invoice...", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
+            // Waiting for Lightning payment
+            state.mintingWaiting -> {
+                Text(
+                    "Lightning invoice (pay with your Lightning wallet):",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(4.dp))
+                Surface(
+                    tonalElevation = 2.dp,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        state.mintInvoice ?: "",
+                        modifier = Modifier.padding(8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Waiting for payment...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    OutlinedButton(onClick = onCancelMinting) { Text("Cancel") }
+                }
+            }
+
+            // Minting tokens...
+            state.mintingTokens -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Minting Cashu tokens...", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+
+            // Tokens minted!
+            state.mintedToken != null -> {
+                Icon(
+                    Icons.Filled.CheckCircle,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "Cashu token ready (${state.amountSat} sats). Connect to TollGate WiFi and tap Pay.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
     }
 }
