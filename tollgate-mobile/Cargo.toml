@@ -33,6 +33,7 @@ cashu = { workspace = true }
 secp256k1 = { workspace = true }
 tracing = { workspace = true }
 uniffi = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 # In-process mock gateway for the integration test — same axum the real
