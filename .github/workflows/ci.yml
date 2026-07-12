@@ -1,0 +1,23 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p tollgate-mobile
+
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: nllkl/setup-android-ndk@v1
+      - run: cargo install cargo-ndk
+      - run: cargo ndk -t arm64-v8a build -p tollgate-mobile --release
+      - run: cd android && ./gradlew assembleDebug
