@@ -97,12 +97,9 @@ class WifiNetworkConnector(private val context: Context) {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 Log.i(TAG, "Connected to $ssid — network available")
-                // Bind process to this network so all HTTP goes through it
-                try {
-                    connectivityManager.bindProcessToNetwork(network)
-                } catch (e: Exception) {
-                    Log.w(TAG, "bindProcessToNetwork failed: ${e.message}")
-                }
+                // Do NOT bindProcessToNetwork — it would route mint HTTP requests
+                // through TollGate WiFi which has no DNS/internet. Instead, store
+                // the network and pass it only to gateway detect/pay calls.
                 _activeNetwork.value = network
                 _connectedSsid.value = ssid
                 result.complete(network)
