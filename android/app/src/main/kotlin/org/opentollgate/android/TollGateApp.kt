@@ -97,6 +97,14 @@ fun TollGateApp(vm: TollgateViewModel) {
                                 restoreState = true
                             }
                         },
+                        onConnectWifi = { ssid ->
+                            vm.onConnectToWifi(ssid)
+                            nav.navigate("pay") {
+                                popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
                         onAddCandidate = vm::onAddCandidate,
                     )
                 }

@@ -48,6 +48,7 @@ import uniffi.tollgate_mobile.TollgateMobileNode
 class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     private val node: TollgateMobileNode = TollgateMobileNode(app.filesDir.absolutePath)
     private val wifiScanner = WifiTollGateScanner(app)
+    val wifiConnector = WifiNetworkConnector(app)
 
     private val _state = MutableStateFlow(
         UiState(
@@ -445,6 +446,107 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
         if (normalized.isEmpty()) return
         _state.update { it.copy(extraCandidates = (it.extraCandidates + normalized).distinct()) }
         onDiscover()
+    }
+
+    /**
+     * Connect to a TollGate WiFi SSID, then detect the gateway, then merge mints.
+     *
+     * Flow:
+     * 1. WifiNetworkSpecifier → system dialog (user confirms)
+     * 2. bindProcessToNetwork → HTTP traffic routes through TollGate WiFi
+     * 3. Query DHCP gateway → probe :2121
+     * 4. Parse advertisement → merge mints into knownMints
+     * 5. Set baseHost + detected → auto-navigate to Pay screen
+     *
+     * @param ssid e.g. "TollGate-F794"
+     */
+    fun onConnectToWifi(ssid: String) = viewModelScope.launch(Dispatchers.IO) {
+        _state.update { it.copy(scanning = true, error = null, discoverError = null) }
+
+        // Step 1: Connect to the SSID
+        val network = wifiConnector.connectToSsid(ssid)
+        if (network == null) {
+            _state.update {
+                it.copy(
+                    scanning = false,
+                    error = "Could not connect to $ssid",
+                )
+            }
+            return@launch
+        }
+
+        // Step 2: Get the gateway URL from DHCP
+        val gatewayUrl = wifiConnector.getGatewayUrl()
+        if (gatewayUrl == null) {
+            _state.update {
+                it.copy(
+                    scanning = false,
+                    error = "Connected to $ssid but couldn't find gateway IP",
+                )
+            }
+            return@launch
+        }
+
+        // Step 3: Probe the gateway
+        val ad = V1GatewayClient.detect(gatewayUrl)
+        if (ad == null) {
+            _state.update {
+                it.copy(
+                    scanning = false,
+                    baseHost = gatewayUrl,
+                    error = "Connected to $ssid but gateway at $gatewayUrl didn't respond",
+                )
+            }
+            return@launch
+        }
+
+        // Step 4: Success — update all state
+        val mac = V1GatewayClient.getWhoami(gatewayUrl)
+        val gatewayMints = ad.mints.filter { it.isNotBlank() }
+        val mergedMints = (state.value.knownMints + gatewayMints).distinct()
+        val preferredMint = when {
+            gatewayMints.isEmpty() -> state.value.mintUrl
+            state.value.mintUrl in gatewayMints -> state.value.mintUrl
+            else -> gatewayMints.first()
+        }
+
+        _state.update {
+            it.copy(
+                scanning = false,
+                baseHost = gatewayUrl,
+                detected = DetectedView(
+                    pubkeyHex = ad.pubkeyHex,
+                    unit = ad.metric,
+                    version = 1.toUByte(),
+                    perUnit = ad.pricePerStep,
+                    perSecond = null,
+                ),
+                online = true,
+                knownMints = mergedMints,
+                mintUrl = preferredMint,
+                gatewayMints = gatewayMints,
+                gatewayMac = mac,
+                discovered = listOf(
+                    DiscoveredPeer(
+                        baseUrl = gatewayUrl,
+                        pubkeyHex = ad.pubkeyHex,
+                        reachable = true,
+                        latencyMs = 0L,
+                        signal = org.opentollgate.android.model.SignalTier.STRONG,
+                        unit = ad.metric,
+                        version = 1.toUByte(),
+                        perUnit = ad.pricePerStep,
+                        perSecond = null,
+                        acceptedMints = gatewayMints,
+                        stepSize = ad.stepSize,
+                    )
+                ),
+                error = null,
+            )
+        }
+
+        // Query initial balance
+        refreshGatewayBalance()
     }
 
     /**

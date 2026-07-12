@@ -73,6 +73,7 @@ fun DiscoverScreen(
     onScan: () -> Unit,
     onStopScan: () -> Unit,
     onConnect: (DiscoveredPeer) -> Unit,
+    onConnectWifi: (String) -> Unit,
     onAddCandidate: (String) -> Unit,
 ) {
     // Auto-run the first scan when the screen appears, so nearby peers show
@@ -99,7 +100,7 @@ fun DiscoverScreen(
                 )
             }
             val reachable = state.discovered.filter { it.reachable }
-            // Show nearby TollGate WiFi networks first
+            // Show nearby TollGate WiFi networks first — tappable to connect
             if (state.wifiNetworks.isNotEmpty()) {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -111,11 +112,31 @@ fun DiscoverScreen(
                         modifier = Modifier.padding(top = 8.dp),
                     )
                     state.wifiNetworks.forEach { network ->
-                        Text(
-                            "  $network",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(vertical = 2.dp),
-                        )
+                        // Extract SSID from display name (format: "TollGate-F794 (GOOD)")
+                        val ssid = network.substringBefore(" (")
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Filled.Wifi,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                network,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f),
+                            )
+                            OutlinedButton(
+                                onClick = { onConnectWifi(ssid) },
+                                enabled = !state.scanning,
+                            ) { Text("Connect") }
+                        }
                     }
                     Spacer(Modifier.height(8.dp))
                 }
