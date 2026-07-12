@@ -99,6 +99,27 @@ fun DiscoverScreen(
                 )
             }
             val reachable = state.discovered.filter { it.reachable }
+            // Show nearby TollGate WiFi networks first
+            if (state.wifiNetworks.isNotEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                ) {
+                    Text(
+                        "TollGate WiFi networks nearby",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    state.wifiNetworks.forEach { network ->
+                        Text(
+                            "  $network",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(vertical = 2.dp),
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
             if (reachable.isEmpty() && !state.scanning) {
                 EmptyState(Modifier.weight(1f))
             } else {

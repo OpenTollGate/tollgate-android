@@ -52,6 +52,8 @@ data class UiState(
      *  Empty until the first scan; sorted best-signal-first by the ViewModel.
      *  Phase 2 swaps the seed-list probe for a live FIPS mesh scan. */
     val discovered: List<DiscoveredPeer> = emptyList(),
+    /** TollGate WiFi networks found by WiFi SSID scan (Layer 1 discovery). */
+    val wifiNetworks: List<String> = emptyList(),
     /** User-added gateway URLs appended to the seed scan candidates. */
     val extraCandidates: List<String> = emptyList(),
     /** True while a Discover scan is probing candidates — drives the spinner. */

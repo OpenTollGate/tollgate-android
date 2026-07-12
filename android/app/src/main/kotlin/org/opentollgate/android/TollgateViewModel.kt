@@ -46,6 +46,7 @@ import uniffi.tollgate_mobile.TollgateMobileNode
  */
 class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     private val node: TollgateMobileNode = TollgateMobileNode(app.filesDir.absolutePath)
+    private val wifiScanner = WifiTollGateScanner(app)
 
     private val _state = MutableStateFlow(
         UiState(
@@ -209,9 +210,37 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
         discoverJob?.cancel()
         discoverJob = viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(scanning = true, discoverError = null) }
+
+            // Layer 1: WiFi SSID scan for TollGate-* networks
+            val wifiResults = mutableListOf<String>()
+            try {
+                val cached = wifiScanner.getCachedResults()
+                if (cached.isNotEmpty()) {
+                    wifiResults.addAll(cached.map { it.displayName })
+                }
+                // Trigger fresh scan (async — results arrive via broadcast)
+                wifiScanner.startScan { networks ->
+                    val names = networks.map { it.displayName }
+                    _state.update { it.copy(wifiNetworks = names) }
+                }
+                // Also check if currently connected to a TollGate SSID
+                val connectedSsid = wifiScanner.getConnectedSsid()
+                val dhcpGateway = wifiScanner.getConnectedGatewayUrl()
+                if (connectedSsid != null && connectedSsid.startsWith("TollGate-", ignoreCase = true)) {
+                    wifiResults.add(0, "CONNECTED: $connectedSsid")
+                }
+            } catch (e: Exception) {
+                // WiFi scan failure is non-fatal — fall through to IP probe
+            }
+            if (wifiResults.isNotEmpty()) {
+                _state.update { it.copy(wifiNetworks = wifiResults) }
+            }
+
             try {
                 val s = state.value
-                val candidates = (SEED_CANDIDATES + s.extraCandidates + s.baseHost)
+                // Include DHCP gateway if connected to a TollGate network
+                val dhcpGateway = try { wifiScanner.getConnectedGatewayUrl() } catch (_: Exception) { null }
+                val candidates = (SEED_CANDIDATES + s.extraCandidates + s.baseHost + listOfNotNull(dhcpGateway))
                     .map(String::trim)
                     .filter { it.isNotBlank() }
                     .distinct()
