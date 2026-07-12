@@ -63,6 +63,7 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onHostChange(host: String) = _state.update { it.copy(baseHost = host) }
     fun onMintChange(mint: String) = _state.update { it.copy(mintUrl = mint) }
+    fun onTokenChange(token: String) = _state.update { it.copy(paymentToken = token.trim().ifBlank { null }) }
 
     /** Set the bootstrap-token amount (sats). Clamped to ≥ 1. */
     fun onAmountChange(sat: Long) = _state.update { it.copy(amountSat = sat.coerceAtLeast(1L)) }
@@ -90,31 +91,76 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onDetect() = viewModelScope.launch(Dispatchers.IO) {
         _state.update { it.copy(error = null) }
-        runCatching { node.detect(state.value.baseHost) }
-            .onSuccess { d ->
-                _state.update {
-                    it.copy(
-                        detected = DetectedView(d.pubkeyHex, d.unit, d.version, d.price?.perUnit, d.price?.perSecond),
-                        online = true,
-                    )
-                }
+        val host = state.value.baseHost
+        // Try v1 HTTP first (production routers), fall back to v2 CBOR
+        val v1Ad = V1GatewayClient.detect(host)
+        if (v1Ad != null) {
+            // Update known mints from the gateway's advertisement
+            val gatewayMints = v1Ad.mints.filter { it.isNotBlank() }
+            _state.update {
+                val mints = (it.knownMints + gatewayMints).distinct()
+                it.copy(
+                    detected = DetectedView(
+                        pubkeyHex = v1Ad.pubkeyHex,
+                        unit = v1Ad.metric,
+                        version = 1.toUByte(),
+                        perUnit = v1Ad.pricePerStep,
+                        perSecond = null,
+                    ),
+                    online = true,
+                    knownMints = mints,
+                    error = null,
+                )
             }
-            .onFailure { e -> _state.update { it.copy(error = e.message ?: "detect failed", online = false) } }
+        } else {
+            // Fall back to v2 CBOR protocol
+            runCatching { node.detect(host) }
+                .onSuccess { d ->
+                    _state.update {
+                        it.copy(
+                            detected = DetectedView(d.pubkeyHex, d.unit, d.version, d.price?.perUnit, d.price?.perSecond),
+                            online = true,
+                        )
+                    }
+                }
+                .onFailure { e -> _state.update { it.copy(error = e.message ?: "detect failed", online = false) } }
+        }
     }
 
     fun onPay(amountSat: Long = state.value.amountSat) = viewModelScope.launch(Dispatchers.IO) {
-        // Toggle the in-flight flag so PayScreen can show a spinner and disable
-        // the button. Cleared in `finally` so a thrown TollgateError can never
-        // leave the UI stuck "paying".
         _state.update { it.copy(paying = true, error = null) }
         try {
             val s = state.value
-            runCatching { node.pay(s.baseHost, s.mintUrl, amountSat.toULong()) }
-                .onSuccess { p ->
-                    _state.update { it.copy(paid = PaidView(p.peerPubkeyHex, p.accepted, p.price?.perUnit)) }
-                    if (p.accepted) startConsume()
+            // Try v1 HTTP first (production routers)
+            val v1Ad = V1GatewayClient.detect(s.baseHost)
+            if (v1Ad != null) {
+                // V1 gateway: POST Cashu token directly
+                val token = s.paymentToken
+                if (token.isNullOrBlank()) {
+                    _state.update { it.copy(error = "Paste a Cashu token from ${s.mintUrl} to pay") }
+                    return@launch
                 }
-                .onFailure { e -> _state.update { it.copy(error = e.message ?: "pay failed") } }
+                val result = V1GatewayClient.pay(s.baseHost, token)
+                _state.update {
+                    it.copy(
+                        paid = PaidView(v1Ad.pubkeyHex, result.accepted, v1Ad.pricePerStep),
+                        error = result.error,
+                    )
+                }
+                if (result.accepted) {
+                    // V1 gateways manage access via the router firewall — no consume loop needed.
+                    // Start a usage monitor instead.
+                    _state.update { it.copy(sessionStartedAt = System.currentTimeMillis()) }
+                }
+            } else {
+                // Fall back to v2 CBOR protocol
+                runCatching { node.pay(s.baseHost, s.mintUrl, amountSat.toULong()) }
+                    .onSuccess { p ->
+                        _state.update { it.copy(paid = PaidView(p.peerPubkeyHex, p.accepted, p.price?.perUnit)) }
+                        if (p.accepted) startConsume()
+                    }
+                    .onFailure { e -> _state.update { it.copy(error = e.message ?: "pay failed") } }
+            }
         } finally {
             _state.update { it.copy(paying = false) }
         }
@@ -304,26 +350,46 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Probe one candidate with a hard 3 s cap. A network/protocol failure (the
-     * host is not a TollGate gateway, or unreachable) is reported as a
-     * reachable=false peer rather than thrown, so the sweep continues. Runs on
-     * the caller's (IO) thread — `detect()` blocks that thread on the node's
-     * tokio runtime, which is safe because it is not a tokio worker thread.
+     * Probe one candidate. Tries v1 HTTP first (production routers on :2121),
+     * falls back to v2 CBOR protocol. A network failure is reported as a
+     * reachable=false peer rather than thrown, so the sweep continues.
      */
     private suspend fun probe(host: String): DiscoveredPeer {
         val started = System.currentTimeMillis()
-        val detected = withTimeoutOrNull(3_000L) {
-            runCatching { node.detect(host) }.getOrNull()
+
+        // Try v1 HTTP first
+        val v1Ad = withTimeoutOrNull(4_000L) {
+            V1GatewayClient.detect(host)
         }
         val latency = System.currentTimeMillis() - started
-        val d = detected
+
+        if (v1Ad != null) {
+            return DiscoveredPeer(
+                baseUrl = host,
+                pubkeyHex = v1Ad.pubkeyHex,
+                reachable = true,
+                latencyMs = latency,
+                signal = signalTier(latency, reachable = true),
+                unit = v1Ad.metric,
+                version = 1.toUByte(),
+                perUnit = v1Ad.pricePerStep,
+                perSecond = null,
+            )
+        }
+
+        // Fall back to v2 CBOR protocol
+        val d = withTimeoutOrNull(3_000L) {
+            runCatching { node.detect(host) }.getOrNull()
+        }
+        val latency2 = System.currentTimeMillis() - started
+
         return if (d != null) {
             DiscoveredPeer(
                 baseUrl = host,
                 pubkeyHex = d.pubkeyHex,
                 reachable = true,
-                latencyMs = latency,
-                signal = signalTier(latency, reachable = true),
+                latencyMs = latency2,
+                signal = signalTier(latency2, reachable = true),
                 unit = d.unit,
                 version = d.version,
                 perUnit = d.price?.perUnit,

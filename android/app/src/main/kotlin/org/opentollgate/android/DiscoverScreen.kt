@@ -291,7 +291,7 @@ private fun AddCandidateBar(onAddCandidate: (String) -> Unit) {
             value = host,
             onValueChange = { host = it },
             label = { Text("add gateway URL") },
-            placeholder = { Text("http://192.168.8.1:4747") },
+            placeholder = { Text("http://192.168.8.1:2121") },
             singleLine = true,
             modifier = Modifier.weight(1f),
         )

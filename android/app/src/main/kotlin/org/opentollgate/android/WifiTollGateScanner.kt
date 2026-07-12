@@ -65,7 +65,7 @@ class WifiTollGateScanner(private val context: Context) {
         }
 
         /**
-         * Estimated gateway URL. TollGate routers run the gateway on port 4747.
+         * Estimated gateway URL. TollGate routers run the gateway on port 2121.
          * We don't know the IP yet (that requires connecting), but we can show
          * the SSID as a candidate. Once connected, DhcpInfo gives the gateway IP.
          */
@@ -144,7 +144,7 @@ class WifiTollGateScanner(private val context: Context) {
         if (dhcp.gateway == 0) return null
         val ip = intToIp(dhcp.gateway)
         Log.d(TAG, "DHCP gateway: $ip")
-        return "http://$ip:4747"
+        return "http://$ip:2121"
     }
 
     /**

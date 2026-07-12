@@ -79,6 +79,7 @@ fun PayScreen(
     onSelectMint: (String) -> Unit,
     onAddMint: (String) -> Unit,
     onAmountChange: (Long) -> Unit,
+    onTokenChange: (String) -> Unit,
     onPay: () -> Unit,
 ) {
     Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Pay") }) }) { pad ->
@@ -95,6 +96,7 @@ fun PayScreen(
                 if (d.perUnit != null || d.perSecond != null) PriceCard(state = state)
             }
             MintCard(state = state, onSelectMint = onSelectMint, onAddMint = onAddMint)
+            TokenCard(state = state, onTokenChange = onTokenChange)
             AmountCard(state = state, onAmountChange = onAmountChange)
             PayButton(state = state, onPay = onPay)
             PayResult(state = state)
@@ -207,9 +209,27 @@ private fun MintCard(state: UiState, onSelectMint: (String) -> Unit, onAddMint: 
 }
 
 @Composable
+private fun TokenCard(state: UiState, onTokenChange: (String) -> Unit) {
+    InfoCard(title = "Cashu Token") {
+        Text(
+            "Paste a Cashu token from ${state.mintUrl.removePrefix("https://")}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        Spacer(Modifier.height(6.dp))
+        OutlinedTextField(
+            value = state.paymentToken ?: "",
+            onValueChange = onTokenChange,
+            label = { Text("cashuA…") },
+            singleLine = false,
+            maxLines = 3,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+@Composable
 private fun AmountCard(state: UiState, onAmountChange: (Long) -> Unit) {
-    // Local field seeded from state so external changes (quick-pick chips) are
-    // reflected, while free typing is preserved between recompositions.
     var amountText by remember(state.amountSat) { mutableStateOf(state.amountSat.toString()) }
     InfoCard(title = "Amount") {
         OutlinedTextField(

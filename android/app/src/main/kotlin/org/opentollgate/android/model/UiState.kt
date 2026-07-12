@@ -1,7 +1,15 @@
 package org.opentollgate.android.model
 
-/** Default Cashu mint used to seed [UiState.knownMints] / [UiState.mintUrl]. */
-const val DEFAULT_MINT: String = "https://mint.minibits.cash"
+/** Default Cashu mints supported by TollGate routers (from /etc/tollgate/config.json). */
+val DEFAULT_MINTS: List<String> = listOf(
+    "https://nofee.testnut.cashu.space",   // testnut — zero fees, default for testing
+    "https://testnut.cashu.exchange",      // alternate testnut
+    "https://mint.coinos.io",              // coinos production mint
+    "https://mint.minibits.cash/Bitcoin",  // minibits production mint
+)
+
+/** Primary default mint (testnut for dev/testing). */
+const val DEFAULT_MINT: String = "https://nofee.testnut.cashu.space"
 
 /**
  * UI state for the TollGate dashboard. Mirrors the JS captive-portal SPA's
@@ -22,7 +30,7 @@ data class UiState(
     val appVersion: String = "",
     /** Short git SHA baked into the APK (BuildConfig.GIT_HASH) for About. */
     val buildHash: String = "",
-    val baseHost: String = "http://192.168.8.1:4747",
+    val baseHost: String = "http://192.168.8.1:2121",
     val mintUrl: String = DEFAULT_MINT,
     val detected: DetectedView? = null,
     val paid: PaidView? = null,
@@ -36,7 +44,7 @@ data class UiState(
     /** Mint URLs the user can pick from on PayScreen. Grown via onAddMint();
      *  the active selection is [mintUrl]. Real per-gateway mint discovery
      *  (PriceSheet → MintOption) lands in Phase 3. */
-    val knownMints: List<String> = listOf(DEFAULT_MINT),
+    val knownMints: List<String> = DEFAULT_MINTS,
     /** Wall-clock millis (System.currentTimeMillis) of the current consume
      *  session's start, or null when not consuming. Drives the live uptime
      *  display on StatusScreen. Set on the first accepted bootstrap; cleared
@@ -58,6 +66,8 @@ data class UiState(
     val extraCandidates: List<String> = emptyList(),
     /** True while a Discover scan is probing candidates — drives the spinner. */
     val scanning: Boolean = false,
+    /** Cashu token pasted by user for v1 gateway payment. */
+    val paymentToken: String? = null,
     /** Last Discover-scan error (per-host reachability is folded into each
      *  DiscoveredPeer; this holds only a whole-scan failure). */
     val discoverError: String? = null,

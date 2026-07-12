@@ -5,7 +5,7 @@ package org.opentollgate.android.model
  * TollGate gateway with `TollgateMobileNode.detect()`.
  *
  * Phase 1 sources candidates from [SEED_CANDIDATES] (common router addresses on
- * the v2 `:4747` port) plus any user-added URLs and the current gateway. Each
+ * the v1 `:2121` port) plus any user-added URLs and the current gateway. Each
  * candidate is probed concurrently; reachable peers surface their pubkey, price
  * and a latency-derived [signal] tier. Phase 2 (FIPS integration, master-plan
  * §Phase 2) replaces the seed-list probe with a live FIPS mesh scan feeding
@@ -56,21 +56,23 @@ fun signalTier(latencyMs: Long, reachable: Boolean): SignalTier = when {
 
 /**
  * Seed candidate gateway URLs probed by Discover. Curated common-router LAN
- * addresses on the TollGate v2 port `:4747` (the protocol's exchange-endpoint
- * root). The user's current gateway ([UiState.baseHost]) and any user-added
- * URLs are always appended at scan time, then the combined list is deduped.
+ * addresses on the TollGate v1 port `:2121` (the production HTTP API port used
+ * by `tollgate-module-basic-go`). The user's current gateway
+ * ([UiState.baseHost]) and any user-added URLs are always appended at scan
+ * time, then the combined list is deduped.
  *
  * NOTE: this is the Phase 1 stand-in for discovery. Phase 2 embeds a real FIPS
  * node whose mesh-peer list feeds this screen directly — same [DiscoveredPeer]
  * rows, no seed list, real RSSI.
  */
 val SEED_CANDIDATES: List<String> = listOf(
-    "http://192.168.8.1:4747",  // H96 / common travel-router default
-    "http://192.168.1.1:4747",  // generic home router
-    "http://192.168.0.1:4747",  // generic home router
-    "http://10.0.0.1:4747",     // alternate home router
-    "http://192.168.50.1:4747", // ASUS / mesh default
-    "http://192.168.4.1:4747",  // GL.iNet default
-    "http://192.168.43.1:4747", // Android Wi-Fi hotspot gateway
-    "http://192.168.1.200:4747", // dev gateway (T470 LAN)
+    "http://192.168.8.1:2121",    // H96 / common travel-router default
+    "http://192.168.1.1:2121",    // generic home router
+    "http://192.168.0.1:2121",    // generic home router
+    "http://10.0.0.1:2121",       // alternate home router
+    "http://192.168.50.1:2121",   // ASUS / mesh default
+    "http://192.168.4.1:2121",    // GL.iNet default
+    "http://192.168.43.1:2121",   // Android Wi-Fi hotspot gateway
+    "http://192.168.2.1:2121",    // T470 LAN gateway
+    "http://10.230.237.1:2121",   // T470 USB ethernet gateway (TollGate test router)
 )

@@ -108,11 +108,7 @@ fun TollGateApp(vm: TollgateViewModel) {
                         onSelectMint = vm::onSelectMint,
                         onAddMint = vm::onAddMint,
                         onAmountChange = vm::onAmountChange,
-                        // Lambda (not a bare ::onPay reference): onPay has a defaulted
-                        // `amountSat` param, and a callable reference to a defaulted
-                        // function is the full-arity type (Long) -> Job — it would not
-                        // match PayScreen's `() -> Unit`. Invoking vm.onPay() here
-                        // supplies the default (state.amountSat).
+                        onTokenChange = vm::onTokenChange,
                         onPay = { vm.onPay() },
                     )
                 }
