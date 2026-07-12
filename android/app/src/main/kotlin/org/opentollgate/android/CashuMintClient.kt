@@ -271,18 +271,20 @@ object CashuMintClient {
      * Format: cashuB<base64url(json({"token":[{"mint":"...","proofs":[...]}]}))>
      */
     private fun buildToken(proofs: List<Proof>, mintUrl: String): String {
+        // Cashu v4 token format uses short keys per NUT-00 spec:
+        // {"token":[{"i":"mintUrl","p":[{"a":64,"s":"secret","c":"sig"}]}],"unit":"sat"}
         val proofsArray = JSONArray()
         for (p in proofs) {
             proofsArray.put(JSONObject().apply {
-                put("amount", p.amount)
-                put("secret", p.secret)
-                put("C", p.c)
+                put("a", p.amount)
+                put("s", p.secret)
+                put("c", p.c)
             })
         }
 
         val tokenInner = JSONObject().apply {
-            put("mint", mintUrl.trimEnd('/'))
-            put("proofs", proofsArray)
+            put("i", mintUrl.trimEnd('/'))
+            put("p", proofsArray)
         }
 
         val outer = JSONObject().apply {
