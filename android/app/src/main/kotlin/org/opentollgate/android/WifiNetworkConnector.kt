@@ -91,7 +91,6 @@ class WifiNetworkConnector(private val context: Context) {
 
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) // local-only
             .setNetworkSpecifier(specifier)
             .build()
 
