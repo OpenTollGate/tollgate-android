@@ -195,13 +195,22 @@ object V1GatewayClient {
         return try {
             val json = JSONObject(body)
             val kind = json.optInt("kind", 0)
-            if (kind != 10021) {
-                Log.w(TAG, "Not a TollGate advertisement (kind=$kind)")
+            // Accept kind 10021 (advertisement) AND kind 21023 (notice) —
+            // gateway returns 21023 on initial GET when no session exists,
+            // but still includes pricing/mint tags. Also log unexpected kinds.
+            if (kind != 10021 && kind != 21023) {
+                Log.w(TAG, "Unexpected kind=$kind, body=${body.take(500)}")
                 return null
+            }
+            if (kind == 21023) {
+                Log.d(TAG, "Got notice (kind=21023), extracting tags: ${body.take(500)}")
             }
 
             val pubkey = json.optString("pubkey", "")
-            val tags = json.optJSONArray("tags") ?: return null
+            val tags = json.optJSONArray("tags") ?: run {
+                Log.w(TAG, "No tags in response (kind=$kind)")
+                return null
+            }
 
             var metric = "bytes"
             var stepSize = 0L
