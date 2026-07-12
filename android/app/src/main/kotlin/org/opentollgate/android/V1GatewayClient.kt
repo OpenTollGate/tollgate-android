@@ -66,9 +66,16 @@ object V1GatewayClient {
      * @return parsed advertisement, or null if unreachable / invalid
      */
     fun detect(baseUrl: String, network: Network? = null): Advertisement? {
+        // Try root / first, then fall back to /health (some gateways serve
+        // notices on / but proper advertisements on /health)
+        return detectPath(baseUrl, "/", network)
+            ?: detectPath(baseUrl, "/health", network)
+    }
+
+    private fun detectPath(baseUrl: String, path: String, network: Network?): Advertisement? {
         return try {
             val cleanUrl = baseUrl.trimEnd('/')
-            val conn = openConnection("$cleanUrl/", network).apply {
+            val conn = openConnection("$cleanUrl$path", network).apply {
                 requestMethod = "GET"
                 connectTimeout = TIMEOUT_MS
                 readTimeout = TIMEOUT_MS
