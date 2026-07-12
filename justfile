@@ -29,16 +29,14 @@ so:
     mkdir -p {{so_dir}}
     cp {{target_dir}}/{{rust_target}}/release/libtollgate_mobile.so {{so_dir}}/
 
-# Generate the UniFFI Kotlin bindings from the compiled .so (run after `so`).
+# Generate the UniFFI Kotlin bindings from the compiled .so (run after `so`),
+# then post-patch them. UniFFI 0.28.3 emits an ambiguous double-`message`
+# property for error variants named `message` (clashes with Throwable.message
+# under Kotlin 2.x); patch-uniffi-bindings.py collapses it to a single
+# `override val message`. Idempotent.
 bindings: so
-    cargo run --bin uniffi-bindgen-cli -- generate \
-        --library {{so_dir}}/libtollgate_mobile.so \
-        --language kotlin \
-        --out-dir {{bindings_dir}} \
-        || uniffi-bindgen generate \
-            --library {{so_dir}}/libtollgate_mobile.so \
-            --language kotlin \
-            --out-dir {{bindings_dir}}
+    cargo run -p uniffi-bindgen -- {{so_dir}}/libtollgate_mobile.so {{bindings_dir}}
+    python3 {{repo_root}}/scripts/patch-uniffi-bindings.py {{bindings_dir}}/uniffi/tollgate_mobile/tollgate_mobile.kt
 
 # Assemble the debug APK (run after `bindings`).
 apk: bindings

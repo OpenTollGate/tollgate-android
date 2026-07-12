@@ -1,0 +1,15 @@
+[package]
+name = "uniffi-bindgen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Thin wrapper that exposes uniffi_bindgen 0.28's library-mode generator as a workspace bin, so `cargo run -p uniffi-bindgen` generates Kotlin bindings without a globally-installed uniffi-bindgen-cli. Mirrors fips-android's uniffi-bindgen member (which targets uniffi 0.31's `cli` feature); pinned to 0.28.3 to match the runtime linked into libtollgate_mobile.so so generated bindings carry a matching metadata checksum."
+
+[[bin]]
+name = "uniffi-bindgen"
+
+[dependencies]
+# Pinned to match the uniffi 0.28.3 runtime in libtollgate_mobile.so.
+uniffi_bindgen = "=0.28.3"
+anyhow = "1"
+camino = "1"

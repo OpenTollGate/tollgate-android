@@ -16,7 +16,7 @@
 # before `cargo test`/`cargo build` to warm the dep cache.
 [workspace]
 resolver = "2"
-members = ["tollgate-mobile"]
+members = ["tollgate-mobile", "uniffi-bindgen"]
 
 [workspace.package]
 version = "0.1.0"
@@ -30,6 +30,11 @@ authors = ["TollGate contributors"]
 # kanban workspace is nested deep under ~/.hermes, so relative paths are brittle).
 tollgate-protocol = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-protocol" }
 tollgate-core = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-core" }
+# FIPS mesh protocol — optional at the consumer level (see tollgate-mobile/Cargo.toml).
+# FIPS v0.4.0 has Linux-only platform code (TUN, raw sockets) that does not
+# cross-compile to Android. Phase 2 will wire FIPS integration once the TUN fd
+# handoff is solved.
+fips = { path = "reference/fips", default-features = false }
 # Matched to tollgate-rs workspace for cache warmth.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
