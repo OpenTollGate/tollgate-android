@@ -48,12 +48,12 @@ object V1GatewayClient {
      */
     private fun openConnection(urlStr: String, network: Network?): HttpURLConnection {
         val url = URL(urlStr)
-        val conn = if (network != null) {
-            network.openConnection(url) as HttpURLConnection
-        } else {
-            url.openConnection() as HttpURLConnection
-        }
-        return conn
+        // On Android 10+, network.openConnection() fails with EPERM on
+        // WifiNetworkSpecifier per-app networks. Instead rely on
+        // bindProcessToNetwork() (called by WifiNetworkConnector) which
+        // sets the process-wide default network. url.openConnection()
+        // honors the process default automatically.
+        return url.openConnection() as HttpURLConnection
     }
 
     /**
