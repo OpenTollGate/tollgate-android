@@ -224,10 +224,12 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(error = null) }
         val host = state.value.baseHost
         // Try v1 HTTP first (production routers), fall back to v2 CBOR
-        val v1Ad = V1GatewayClient.detect(host)
+        // Pass active TollGate WiFi network for correct routing
+        val net = wifiConnector.activeNetwork.value
+        val v1Ad = V1GatewayClient.detect(host, net)
         if (v1Ad != null) {
             // Query device MAC and update all gateway state
-            val mac = V1GatewayClient.getWhoami(host)
+            val mac = V1GatewayClient.getWhoami(host, net)
             val gatewayMints = v1Ad.mints.filter { it.isNotBlank() }
             // Merge gateway mints into known mints
             _state.update {
@@ -687,9 +689,10 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun probe(host: String): DiscoveredPeer {
         val started = System.currentTimeMillis()
 
-        // Try v1 HTTP first
+        // Try v1 HTTP first — pass active TollGate WiFi network
+        val net = wifiConnector.activeNetwork.value
         val v1Ad = withTimeoutOrNull(4_000L) {
-            V1GatewayClient.detect(host)
+            V1GatewayClient.detect(host, net)
         }
         val latency = System.currentTimeMillis() - started
 

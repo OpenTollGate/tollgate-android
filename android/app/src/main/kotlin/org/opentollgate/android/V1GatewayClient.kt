@@ -48,12 +48,15 @@ object V1GatewayClient {
      */
     private fun openConnection(urlStr: String, network: Network?): HttpURLConnection {
         val url = URL(urlStr)
-        // On Android 10+, network.openConnection() fails with EPERM on
-        // WifiNetworkSpecifier per-app networks. Instead rely on
-        // bindProcessToNetwork() (called by WifiNetworkConnector) which
-        // sets the process-wide default network. url.openConnection()
-        // honors the process default automatically.
-        return url.openConnection() as HttpURLConnection
+        // Use network.openConnection() when a TollGate WiFi network is available.
+        // bindProcessToNetwork() alone is unreliable — HttpURLConnection caches
+        // the default network's socket factory and ignores late process binding.
+        // network.openConnection() forces routing through the specified network.
+        return if (network != null) {
+            network.openConnection(url) as HttpURLConnection
+        } else {
+            url.openConnection() as HttpURLConnection
+        }
     }
 
     /**
