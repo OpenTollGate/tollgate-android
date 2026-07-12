@@ -1,5 +1,6 @@
 package org.opentollgate.android
 
+import android.net.Network
 import android.util.Log
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -8,15 +9,16 @@ import java.net.URL
 /**
  * TollGate v1 HTTP gateway client.
  *
- * The production routers run `tollgate-module-basic-go` which exposes a simple
- * REST API on port 2121 (NOT the v2 CBOR protocol on port 4747). This client
- * implements the v1 protocol:
+ * All production routers run `tollgate-module-basic-go` which exposes a REST
+ * API on port 2121. This client implements the v1 protocol:
  *
  *  - `GET /`  → Nostr event kind 10021 (advertisement with pricing + mints)
  *  - `POST /` → Cashu token body → session event (kind 1022) or notice (kind 21023)
  *
- * The v2 CBOR protocol (tollgate-rs) is a future upgrade path; today's routers
- * all speak v1 HTTP.
+ * When a [network] is provided (from WifiNetworkSpecifier), HTTP connections
+ * are routed through that network via `network.openConnection()`. This is the
+ * correct Android pattern — `bindProcessToNetwork` is unreliable across
+ * threads. Without a network, falls back to the default system network.
  */
 object V1GatewayClient {
 
@@ -41,15 +43,29 @@ object V1GatewayClient {
     )
 
     /**
+     * Open an HTTP connection, routing through the TollGate WiFi [network]
+     * when provided. Falls back to default network when null.
+     */
+    private fun openConnection(urlStr: String, network: Network?): HttpURLConnection {
+        val url = URL(urlStr)
+        val conn = if (network != null) {
+            network.openConnection(url) as HttpURLConnection
+        } else {
+            url.openConnection() as HttpURLConnection
+        }
+        return conn
+    }
+
+    /**
      * Probe a gateway's advertisement endpoint.
      * @param baseUrl e.g. "http://10.230.237.1:2121"
+     * @param network optional WiFi network to route through
      * @return parsed advertisement, or null if unreachable / invalid
      */
-    fun detect(baseUrl: String): Advertisement? {
+    fun detect(baseUrl: String, network: Network? = null): Advertisement? {
         return try {
             val cleanUrl = baseUrl.trimEnd('/')
-            val url = URL("$cleanUrl/")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
+            val conn = openConnection("$cleanUrl/", network).apply {
                 requestMethod = "GET"
                 connectTimeout = TIMEOUT_MS
                 readTimeout = TIMEOUT_MS
@@ -73,13 +89,13 @@ object V1GatewayClient {
      * Submit a Cashu token to purchase internet access.
      * @param baseUrl e.g. "http://10.230.237.1:2121"
      * @param cashuToken raw Cashu token string (cashuA...)
+     * @param network optional WiFi network to route through
      * @return payment result
      */
-    fun pay(baseUrl: String, cashuToken: String): PaymentResult {
+    fun pay(baseUrl: String, cashuToken: String, network: Network? = null): PaymentResult {
         return try {
             val cleanUrl = baseUrl.trimEnd('/')
-            val url = URL("$cleanUrl/")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
+            val conn = openConnection("$cleanUrl/", network).apply {
                 requestMethod = "POST"
                 connectTimeout = TIMEOUT_MS
                 readTimeout = 15000  // payment may take longer
@@ -112,36 +128,8 @@ object V1GatewayClient {
     }
 
     /**
-     * Query usage from the gateway.
-     * @return pair of (used, total) or null on failure
-     */
-    fun getUsage(baseUrl: String, macAddress: String? = null): Pair<Long, Long>? {
-        return try {
-            val cleanUrl = baseUrl.trimEnd('/')
-            val url = URL("$cleanUrl/usage")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = TIMEOUT_MS
-                readTimeout = TIMEOUT_MS
-            }
-            if (conn.responseCode != 200) return null
-            val body = conn.inputStream.bufferedReader().readText().trim()
-            conn.disconnect()
-            // Format: "used/total" (e.g. "1234567/22020096")
-            val parts = body.split("/")
-            if (parts.size == 2) {
-                Pair(parts[0].toLongOrNull() ?: -1, parts[1].toLongOrNull() ?: -1)
-            } else null
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /**
      * Query session balance from the gateway.
      * GET /balance → JSON with session_active, usage, allotment, remaining.
-     * The gateway identifies the device by MAC (from ARP table), so no
-     * auth needed — just be on the router's network.
      */
     data class Balance(
         val sessionActive: Boolean,
@@ -152,11 +140,10 @@ object V1GatewayClient {
         val startTime: Long,
     )
 
-    fun getBalance(baseUrl: String): Balance? {
+    fun getBalance(baseUrl: String, network: Network? = null): Balance? {
         return try {
             val cleanUrl = baseUrl.trimEnd('/')
-            val url = URL("$cleanUrl/balance")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
+            val conn = openConnection("$cleanUrl/balance", network).apply {
                 requestMethod = "GET"
                 connectTimeout = TIMEOUT_MS
                 readTimeout = TIMEOUT_MS
@@ -182,13 +169,11 @@ object V1GatewayClient {
     /**
      * Get the device's MAC address as seen by the gateway.
      * GET /whoami → "mac=XX:XX:XX:XX:XX:XX"
-     * Useful for debugging and for the gateway to identify the device.
      */
-    fun getWhoami(baseUrl: String): String? {
+    fun getWhoami(baseUrl: String, network: Network? = null): String? {
         return try {
             val cleanUrl = baseUrl.trimEnd('/')
-            val url = URL("$cleanUrl/whoami")
-            val conn = (url.openConnection() as HttpURLConnection).apply {
+            val conn = openConnection("$cleanUrl/whoami", network).apply {
                 requestMethod = "GET"
                 connectTimeout = TIMEOUT_MS
                 readTimeout = TIMEOUT_MS

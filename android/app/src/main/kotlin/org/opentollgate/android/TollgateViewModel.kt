@@ -145,7 +145,7 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     private fun refreshGatewayBalance() {
         val host = state.value.baseHost
         viewModelScope.launch(Dispatchers.IO) {
-            val bal = V1GatewayClient.getBalance(host)
+            val bal = V1GatewayClient.getBalance(host, wifiConnector.activeNetwork.value)
             if (bal != null) {
                 _state.update {
                     it.copy(
@@ -175,10 +175,11 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             // Try v1 HTTP only (all production TollGate routers use :2121)
-            val v1Ad = V1GatewayClient.detect(s.baseHost)
+            val net = wifiConnector.activeNetwork.value
+            val v1Ad = V1GatewayClient.detect(s.baseHost, net)
             if (v1Ad != null) {
                 // V1 gateway: POST Cashu token directly
-                val result = V1GatewayClient.pay(s.baseHost, s.paymentToken!!)
+                val result = V1GatewayClient.pay(s.baseHost, s.paymentToken!!, net)
                 _state.update {
                     it.copy(
                         paid = PaidView(v1Ad.pubkeyHex, result.accepted, v1Ad.pricePerStep),
@@ -280,7 +281,7 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 while (true) {
                     val host = state.value.baseHost
-                    val bal = V1GatewayClient.getBalance(host)
+                    val bal = V1GatewayClient.getBalance(host, wifiConnector.activeNetwork.value)
                     if (bal != null) {
                         _state.update {
                             it.copy(
@@ -487,8 +488,8 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             return@launch
         }
 
-        // Step 3: Probe the gateway
-        val ad = V1GatewayClient.detect(gatewayUrl)
+        // Step 3: Probe the gateway — route HTTP through the TollGate WiFi network
+        val ad = V1GatewayClient.detect(gatewayUrl, network)
         if (ad == null) {
             _state.update {
                 it.copy(
@@ -501,7 +502,7 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         // Step 4: Success — update all state
-        val mac = V1GatewayClient.getWhoami(gatewayUrl)
+        val mac = V1GatewayClient.getWhoami(gatewayUrl, network)
         val gatewayMints = ad.mints.filter { it.isNotBlank() }
         val mergedMints = (state.value.knownMints + gatewayMints).distinct()
         val preferredMint = when {
