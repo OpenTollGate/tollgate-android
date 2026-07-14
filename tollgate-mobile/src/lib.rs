@@ -30,6 +30,8 @@ uniffi::setup_scaffolding!("tollgate_mobile");
 #[cfg(feature = "fips")]
 mod jni;
 
+mod wallet;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -110,6 +112,14 @@ pub struct ReportSummary {
     pub elapsed_ms: u64,
     pub delivered: u64,
     pub received: u64,
+}
+
+/// A Cashu mint quote: the Lightning invoice to pay and the quote ID to
+/// track its state.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct MintQuote {
+    pub quote_id: String,
+    pub invoice: String,
 }
 
 /// Errors surfaced across the FFI boundary. `reason` is a short human string.
@@ -665,5 +675,50 @@ impl TollgateMobileNode {
         self.stop_flag.store(true, Ordering::Relaxed);
         // Detach: the task exits on its own. We don't await it here (would block
         // the Kotlin thread); poll_event returning None signals completion.
+    }
+
+    // -- Cashu wallet operations (real minting via the `cashu` crate) ---------
+
+    /// Request a Lightning mint quote from a Cashu mint. Returns the quote ID
+    /// and the bolt11 invoice the user must pay. After payment, call
+    /// [`check_mint_quote`] until it returns `"PAID"`, then [`mint_tokens`].
+    pub fn request_mint_quote(
+        &self,
+        mint_url: String,
+        amount_sat: u64,
+    ) -> Result<MintQuote, TollgateError> {
+        let (quote_id, invoice) = self
+            .runtime
+            .block_on(wallet::request_quote(&mint_url, amount_sat))
+            .map_err(TollgateError::from)?;
+        Ok(MintQuote {
+            quote_id,
+            invoice,
+        })
+    }
+
+    /// Check the payment state of a mint quote. Returns `"UNPAID"`, `"PAID"`,
+    /// or `"ISSUED"`.
+    pub fn check_mint_quote(
+        &self,
+        mint_url: String,
+        quote_id: String,
+    ) -> Result<String, TollgateError> {
+        self.runtime
+            .block_on(wallet::check_quote(&mint_url, &quote_id))
+            .map_err(TollgateError::from)
+    }
+
+    /// Mint ecash tokens for a paid quote. Performs the full NUT-04 blind
+    /// signature exchange and returns a `cashuA…` token string.
+    pub fn mint_tokens(
+        &self,
+        mint_url: String,
+        quote_id: String,
+        amount_sat: u64,
+    ) -> Result<String, TollgateError> {
+        self.runtime
+            .block_on(wallet::mint_tokens(&mint_url, &quote_id, amount_sat))
+            .map_err(TollgateError::from)
     }
 }

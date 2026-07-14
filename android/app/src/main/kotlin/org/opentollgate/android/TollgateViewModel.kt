@@ -96,28 +96,25 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
 
-        val quote = CashuMintClient.requestQuote(mint, amount)
-        if (quote == null) {
+        try {
+            val quote = node.requestMintQuote(mint, amount.toULong())
             _state.update {
                 it.copy(
                     mintingInvoice = false,
-                    error = "Failed to get Lightning invoice from $mint",
+                    mintInvoice = quote.invoice,
+                    mintQuoteId = quote.quoteId,
+                    mintingWaiting = true,
                 )
             }
-            return@launch
+            startQuotePolling(mint, quote.quoteId)
+        } catch (e: Exception) {
+            _state.update {
+                it.copy(
+                    mintingInvoice = false,
+                    error = "Failed to get Lightning invoice from $mint: ${e.message}",
+                )
+            }
         }
-
-        _state.update {
-            it.copy(
-                mintingInvoice = false,
-                mintInvoice = quote.invoice,
-                mintQuoteId = quote.quoteId,
-                mintingWaiting = true,
-            )
-        }
-
-        // Start polling for payment
-        startQuotePolling(mint, quote.quoteId)
     }
 
     /**
@@ -130,12 +127,14 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             val maxAttempts = 120 // 10 minutes max
             while (isActive && attempts < maxAttempts) {
                 delay(5000)
-                val state = CashuMintClient.checkQuote(mint, quoteId)
-                if (state == "PAID") {
+                val quoteState = try {
+                    node.checkMintQuote(mint, quoteId)
+                } catch (_: Exception) { "UNPAID" }
+                if (quoteState == "PAID") {
                     // Payment confirmed — mint the tokens
                     mintAfterPayment(mint, quoteId)
                     return@launch
-                } else if (state == "EXPIRED") {
+                } else if (quoteState == "EXPIRED") {
                     _state.update {
                         it.copy(
                             mintingWaiting = false,
@@ -164,24 +163,23 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(mintingWaiting = false, mintingTokens = true) }
 
             val amount = state.value.amountSat
-            val result = CashuMintClient.mintTokens(mint, quoteId, amount)
-            if (result == null) {
+            try {
+                val token = node.mintTokens(mint, quoteId, amount.toULong())
                 _state.update {
                     it.copy(
                         mintingTokens = false,
-                        error = "Failed to mint Cashu tokens. Payment may have been processed.",
+                        mintedToken = token,
+                        paymentToken = token,
+                        error = null,
                     )
                 }
-                return@launch
-            }
-
-            _state.update {
-                it.copy(
-                    mintingTokens = false,
-                    mintedToken = result.token,
-                    paymentToken = result.token,
-                    error = null,
-                )
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(
+                        mintingTokens = false,
+                        error = "Failed to mint Cashu tokens: ${e.message}",
+                    )
+                }
             }
         }
     }
