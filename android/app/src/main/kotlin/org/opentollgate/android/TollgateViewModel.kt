@@ -614,8 +614,11 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             return@launch
         }
 
-        // Step 2: Get the gateway URL from DHCP
-        val gatewayUrl = wifiConnector.getGatewayUrl()
+        // Step 2: Get the gateway URL from the connected network
+        // Pass the Network object to get correct gateway via LinkProperties
+        // (WifiManager.dhcpInfo doesn't work with per-app WifiNetworkSpecifier)
+        delay(500) // Brief delay for DHCP to settle
+        val gatewayUrl = wifiConnector.getGatewayUrl(network)
         if (gatewayUrl == null) {
             _state.update {
                 it.copy(

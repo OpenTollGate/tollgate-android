@@ -156,14 +156,35 @@ class WifiNetworkConnector(private val context: Context) {
         } catch (_: Exception) {}
     }
 
-    /** Get the DHCP gateway URL of the connected TollGate network. */
-    fun getGatewayUrl(): String? {
-        // After connecting, the gateway IP comes from WifiManager dhcpInfo
+    /** Get the gateway URL of the connected TollGate network.
+     *
+     * Uses ConnectivityManager.getLinkProperties(network) which works correctly
+     * with per-app WifiNetworkSpecifier connections on Android 10+. Falls back
+     * to WifiManager.dhcpInfo for older APIs or when LinkProperties is unavailable.
+     */
+    fun getGatewayUrl(network: Network? = activeNetwork.value): String? {
+        // Primary: LinkProperties from the per-app Network object
+        if (network != null && connectivityManager != null) {
+            val lp = connectivityManager.getLinkProperties(network)
+            if (lp != null) {
+                for (route in lp.routes) {
+                    val gw = route.gateway
+                    if (gw != null && !gw.isLoopbackAddress) {
+                        val ip = gw.hostAddress ?: continue
+                        Log.i(TAG, "LinkProperties gateway: $ip")
+                        return "http://$ip:2121"
+                    }
+                }
+            }
+        }
+
+        // Fallback: WifiManager.dhcpInfo (primary connection only, not per-app)
         val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
             ?: return null
         val dhcp = wifiManager.dhcpInfo ?: return null
         if (dhcp.gateway == 0) return null
         val ip = "${dhcp.gateway and 0xFF}.${(dhcp.gateway shr 8) and 0xFF}.${(dhcp.gateway shr 16) and 0xFF}.${(dhcp.gateway shr 24) and 0xFF}"
+        Log.d(TAG, "DHCP gateway (fallback): $ip")
         return "http://$ip:2121"
     }
 }
