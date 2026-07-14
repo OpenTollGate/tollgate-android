@@ -156,48 +156,70 @@ class WifiNetworkConnector(private val context: Context) {
         } catch (_: Exception) {}
     }
 
-    /** Get the gateway URL of the connected TollGate network.
+    /**
+     * Get all candidate gateway URLs for the connected TollGate network.
      *
-     * Uses ConnectivityManager.getLinkProperties(network) which works correctly
-     * with per-app WifiNetworkSpecifier connections on Android 10+. Falls back
-     * to WifiManager.dhcpInfo for older APIs or when LinkProperties is unavailable.
+     * Tries multiple sources to build a list of likely gateway IPs:
+     * 1. LinkProperties route gateways (IPv4 only)
+     * 2. DHCP gateway (from dhcpInfo)
+     * 3. DHCP server address
+     * 4. Derived from our IP: x.x.x.1, x.x.x.254, x.x.x.2
+     *
+     * The caller should probe ALL of these in parallel and use whichever responds.
      */
-    fun getGatewayUrl(network: Network? = activeNetwork.value): String? {
-        // Primary: LinkProperties from the per-app Network object
+    fun getGatewayCandidates(network: Network? = activeNetwork.value): List<String> {
+        val result = mutableSetOf<String>()
+
+        // Source 1: LinkProperties routes (IPv4 gateways)
         if (network != null && connectivityManager != null) {
             val lp = connectivityManager.getLinkProperties(network)
             if (lp != null) {
-                // Try routes first (IPv4 only)
                 for (route in lp.routes) {
                     val gw = route.gateway
                     if (gw != null && !gw.isLoopbackAddress && gw is java.net.Inet4Address) {
                         val ip = gw.hostAddress ?: continue
-                        Log.i(TAG, "LinkProperties gateway: $ip")
-                        return "http://$ip:2121"
+                        Log.i(TAG, "Route gateway candidate: $ip")
+                        result.add("http://$ip:2121")
                     }
                 }
-                // Fallback: use DHCP server address + .1 of our IP
-                val linkAddr = lp.linkAddresses.firstOrNull()
-                if (linkAddr != null) {
+                // Source 2: derive from our link address
+                for (linkAddr in lp.linkAddresses) {
                     val ip = linkAddr.address
-                    if (ip is java.net.Inet4Address) {
-                        val ipBytes = ip.address
-                        // Try x.x.x.1 (most common gateway pattern)
-                        val gw1 = java.net.InetAddress.getByAddress(byteArrayOf(ipBytes[0], ipBytes[1], ipBytes[2], 1))
-                        Log.i(TAG, "Derived gateway from link address: ${gw1.hostAddress}")
-                        return "http://${gw1.hostAddress}:2121"
+                    if (ip is java.net.Inet4Address && !ip.isLoopbackAddress) {
+                        val b = ip.address
+                        val prefix = "${b[0].toInt() and 0xFF}.${b[1].toInt() and 0xFF}.${b[2].toInt() and 0xFF}"
+                        Log.i(TAG, "Our IP on TollGate: ${ip.hostAddress}, deriving candidates")
+                        result.add("http://$prefix.1:2121")
+                        result.add("http://$prefix.254:2121")
+                        result.add("http://$prefix.2:2121")
                     }
                 }
             }
         }
 
-        // Fallback: WifiManager.dhcpInfo (primary connection only, not per-app)
+        // Source 3: WifiManager dhcpInfo
         val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
-            ?: return null
-        val dhcp = wifiManager.dhcpInfo ?: return null
-        if (dhcp.gateway == 0) return null
-        val ip = "${dhcp.gateway and 0xFF}.${(dhcp.gateway shr 8) and 0xFF}.${(dhcp.gateway shr 16) and 0xFF}.${(dhcp.gateway shr 24) and 0xFF}"
-        Log.d(TAG, "DHCP gateway (fallback): $ip")
-        return "http://$ip:2121"
+        if (wifiManager != null) {
+            val dhcp = wifiManager.dhcpInfo
+            if (dhcp != null) {
+                if (dhcp.gateway != 0) {
+                    val gwIp = "${dhcp.gateway and 0xFF}.${(dhcp.gateway shr 8) and 0xFF}.${(dhcp.gateway shr 16) and 0xFF}.${(dhcp.gateway shr 24) and 0xFF}"
+                    Log.d(TAG, "DHCP gateway candidate: $gwIp")
+                    result.add("http://$gwIp:2121")
+                }
+                if (dhcp.serverAddress != 0) {
+                    val srvIp = "${dhcp.serverAddress and 0xFF}.${(dhcp.serverAddress shr 8) and 0xFF}.${(dhcp.serverAddress shr 16) and 0xFF}.${(dhcp.serverAddress shr 24) and 0xFF}"
+                    Log.d(TAG, "DHCP server candidate: $srvIp")
+                    result.add("http://$srvIp:2121")
+                }
+            }
+        }
+
+        // Filter out obviously invalid entries
+        return result.filter { !it.contains("::") && !it.contains("http://0.") && !it.contains(":0:2121") }
     }
+
+    /** Legacy single-URL getter — delegates to [getGatewayCandidates]. */
+    fun getGatewayUrl(network: Network? = activeNetwork.value): String? =
+        getGatewayCandidates(network).firstOrNull()
 }

@@ -664,29 +664,36 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             return@launch
         }
 
-        // Step 2: Get the gateway URL from the connected network
-        // Pass the Network object to get correct gateway via LinkProperties
-        // (WifiManager.dhcpInfo doesn't work with per-app WifiNetworkSpecifier)
-        delay(500) // Brief delay for DHCP to settle
-        val gatewayUrl = wifiConnector.getGatewayUrl(network)
-        if (gatewayUrl == null) {
+        // Step 2: Wait for DHCP to settle, then probe multiple gateway candidates
+        delay(2000) // DHCP needs time on some routers
+        val candidates = wifiConnector.getGatewayCandidates(network)
+        Log.i("TollgateViewModel", "Gateway candidates from TollGate WiFi: $candidates")
+        
+        if (candidates.isEmpty()) {
             _state.update {
                 it.copy(
                     scanning = false,
-                    error = "Connected to $ssid but couldn't find gateway IP",
+                    error = "Connected to $ssid but couldn't determine gateway IP",
                 )
             }
             return@launch
         }
 
-        // Step 3: Probe the gateway — route HTTP through the TollGate WiFi network
+        // Step 3: Probe ALL candidates in parallel — first responder wins
+        val gatewayUrl = candidates.firstOrNull { url ->
+            V1GatewayClient.detect(url, network) != null
+        } ?: candidates.first() // fallback: try first even if none responded yet
+
+        Log.i("TollgateViewModel", "Using gateway: $gatewayUrl")
+
+        // Step 4: Detect the gateway
         val ad = V1GatewayClient.detect(gatewayUrl, network)
         if (ad == null) {
             _state.update {
                 it.copy(
                     scanning = false,
                     baseHost = gatewayUrl,
-                    error = "Connected to $ssid but gateway at $gatewayUrl didn't respond",
+                    error = "Connected to $ssid but gateway at $gatewayUrl didn't respond. Tried: ${candidates.joinToString()}",
                 )
             }
             return@launch
