@@ -167,12 +167,25 @@ class WifiNetworkConnector(private val context: Context) {
         if (network != null && connectivityManager != null) {
             val lp = connectivityManager.getLinkProperties(network)
             if (lp != null) {
+                // Try routes first (IPv4 only)
                 for (route in lp.routes) {
                     val gw = route.gateway
-                    if (gw != null && !gw.isLoopbackAddress) {
+                    if (gw != null && !gw.isLoopbackAddress && gw is java.net.Inet4Address) {
                         val ip = gw.hostAddress ?: continue
                         Log.i(TAG, "LinkProperties gateway: $ip")
                         return "http://$ip:2121"
+                    }
+                }
+                // Fallback: use DHCP server address + .1 of our IP
+                val linkAddr = lp.linkAddresses.firstOrNull()
+                if (linkAddr != null) {
+                    val ip = linkAddr.address
+                    if (ip is java.net.Inet4Address) {
+                        val ipBytes = ip.address
+                        // Try x.x.x.1 (most common gateway pattern)
+                        val gw1 = java.net.InetAddress.getByAddress(byteArrayOf(ipBytes[0], ipBytes[1], ipBytes[2], 1))
+                        Log.i(TAG, "Derived gateway from link address: ${gw1.hostAddress}")
+                        return "http://${gw1.hostAddress}:2121"
                     }
                 }
             }

@@ -558,11 +558,13 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
 
             try {
                 val s = state.value
-                // Include DHCP gateway if connected to a TollGate network
+                // Include gateway from active TollGate WiFi network (LinkProperties)
+                // and DHCP fallback. Filter out invalid URLs (IPv6, empty host).
+                val activeGw = try { wifiConnector.getGatewayUrl() } catch (_: Exception) { null }
                 val dhcpGateway = try { wifiScanner.getConnectedGatewayUrl() } catch (_: Exception) { null }
-                val candidates = (SEED_CANDIDATES + s.extraCandidates + s.baseHost + listOfNotNull(dhcpGateway))
+                val candidates = (SEED_CANDIDATES + s.extraCandidates + s.baseHost + listOfNotNull(activeGw, dhcpGateway))
                     .map(String::trim)
-                    .filter { it.isNotBlank() }
+                    .filter { it.isNotBlank() && !it.contains("::") && !it.contains("http://:") }
                     .distinct()
                 val results = coroutineScope {
                     candidates.map { host -> async { probe(host) } }.awaitAll()
