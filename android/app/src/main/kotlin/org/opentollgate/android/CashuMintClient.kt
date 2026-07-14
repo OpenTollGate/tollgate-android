@@ -131,7 +131,7 @@ object CashuMintClient {
      */
     data class MintResult(
         val proofs: List<Proof>,
-        val token: String,  // cashuB... format
+        val token: String,  // cashuA... format (V3 JSON)
     )
 
     fun mintTokens(mintUrl: String, quoteId: String, totalAmount: Long): MintResult? {
@@ -267,8 +267,8 @@ object CashuMintClient {
     // ── Cashu Token Building ───────────────────────────────────────
 
     /**
-     * Build a Cashu v4 token string from proofs.
-     * Format: cashuB<base64url(json({"token":[{"mint":"...","proofs":[...]}]}))>
+     * Build a Cashu V3 token string from proofs.
+     * Format: cashuA<base64url(json({"token":[{"i":"mintUrl","p":[{"a":64,"s":"secret","c":"sig"}]}],"unit":"sat"}))>
      */
     private fun buildToken(proofs: List<Proof>, mintUrl: String): String {
         // Cashu v4 token format uses short keys per NUT-00 spec:
@@ -295,7 +295,11 @@ object CashuMintClient {
 
         val jsonStr = outer.toString()
         val b64 = Base64.encodeToString(jsonStr.toByteArray(), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
-        return "cashuB$b64"
+        // FIX: use cashuA prefix for JSON-encoded V3 tokens.
+        // cashuB prefix means CBOR (V4) — gateway's V4 decoder tries CBOR
+        // unmarshal on JSON bytes and fails, then V3 fallback expects cashuA.
+        // This caused "invalid V3 token" rejections on every payment attempt.
+        return "cashuA$b64"
     }
 
     // ── secp256k1 Crypto Operations ────────────────────────────────
