@@ -14,6 +14,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * Cashu mint client implementing NUT-00 (blinded signatures) and NUT-04 (minting via Lightning).
@@ -155,7 +157,11 @@ object CashuMintClient {
             val secret = randomBytes(32)
             val secretHex = secret.toHex()
             val r = randomModN()
-            val bPoint = hashToCurve(secret)
+            // CRITICAL: hash the hex string bytes, not the raw bytes.
+            // The gateway does HashToCurve([]byte(secret)) where secret is the
+            // hex string stored in the proof. If we hash raw bytes here, the
+            // gateway computes a different Y → proofs can't be verified.
+            val bPoint = hashToCurve(secretHex.toByteArray(Charsets.UTF_8))
             val rInv = r.modInverse(N)
             val bBlinded = bPoint.multiply(rInv).normalize()
             val bHex = bBlinded.getEncoded(true).toHex()
@@ -309,29 +315,38 @@ object CashuMintClient {
     // ── secp256k1 Crypto Operations ────────────────────────────────
 
     /**
-     * Cashu hash_to_curve (NUT-00):
-     * SHA256(secret), then try to decompress as curve point with counter.
+     * Cashu hash_to_curve (NUT-00) — matches gonuts-tollgate gateway implementation.
+     *
+     * Algorithm:
+     * 1. msgToHash = SHA256("Secp256k1_HashToCurve_Cashu_" + message)
+     * 2. For counter = 0, 1, 2, ... (4-byte little-endian):
+     *    hash = SHA256(msgToHash + counter_bytes)
+     *    Try compressed point 0x02 || hash
+     *    If valid and on curve → return
+     *
+     * CRITICAL: must match gonuts' crypto.HashToCurve exactly, otherwise
+     * the gateway cannot verify proofs (C != k * Y_gateway).
      */
-    private fun hashToCurve(secret: ByteArray): ECPoint {
+    private fun hashToCurve(message: ByteArray): ECPoint {
+        val DOMAIN_SEPARATOR = "Secp256k1_HashToCurve_Cashu_".toByteArray()
         val sha256 = MessageDigest.getInstance("SHA-256")
-        val hash = sha256.digest(secret)
+        val msgToHash = sha256.digest(DOMAIN_SEPARATOR + message)
+
         var counter = 0
-        while (true) {
-            val input = hash + "_".toByteArray() + byteArrayOf(counter.toByte())
-            val h = sha256.digest(input)
-            val compressed = byteArrayOf(0x02) + h
+        while (counter < 65536) {
+            // 4-byte little-endian counter (matches gonuts binary.LittleEndian.PutUint32)
+            val counterBytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(counter).array()
+            val hash = sha256.digest(msgToHash + counterBytes)
+            val compressed = byteArrayOf(0x02) + hash
             try {
-                val point = CURVE_PARAMS.curve.decodePoint(compressed)
-                return point
+                // decodePoint throws if the x-coordinate doesn't yield a valid
+                // curve point (equivalent to gonuts' ParsePubKey + IsOnCurve)
+                return CURVE_PARAMS.curve.decodePoint(compressed)
             } catch (_: Exception) {
-                counter++
-                if (counter > 255) {
-                    // Fallback: use 0x03 prefix
-                    val compressed3 = byteArrayOf(0x03) + h
-                    return CURVE_PARAMS.curve.decodePoint(compressed3)
-                }
             }
+            counter++
         }
+        throw RuntimeException("hashToCurve: no valid point found after 65536 iterations")
     }
 
     /**
