@@ -252,6 +252,45 @@ pub async fn mint_tokens(
     Ok(token.to_string())
 }
 
+/// Auto-mint ecash from a test mint that auto-settles invoices.
+///
+/// This is the full one-shot flow:
+/// 1. Request a mint quote (get LN invoice)
+/// 2. Poll the quote until state is "PAID" (test mints like testnut auto-pay)
+/// 3. Mint tokens via the NUT-04 blind signature exchange
+///
+/// `max_wait_secs` controls how long to wait for the quote to become PAID.
+pub async fn auto_mint(
+    mint_url: &str,
+    amount_sat: u64,
+    max_wait_secs: u64,
+) -> anyhow::Result<(String, String)> {
+    // Step 1: Request quote
+    let (quote_id, _invoice) = request_quote(mint_url, amount_sat).await?;
+
+    // Step 2: Poll until PAID
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(max_wait_secs);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let state = check_quote(mint_url, &quote_id).await?;
+        match state.as_str() {
+            "PAID" => break,
+            "ISSUED" => {
+                return Err(anyhow!("quote {quote_id} already issued — tokens were already minted"));
+            }
+            "UNPAID" if std::time::Instant::now() >= deadline => {
+                return Err(anyhow!("quote {quote_id} not paid after {max_wait_secs}s"));
+            }
+            _ => {}
+        }
+    }
+
+    // Step 3: Mint tokens
+    let token = mint_tokens(mint_url, &quote_id, amount_sat).await?;
+    Ok((quote_id, token))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

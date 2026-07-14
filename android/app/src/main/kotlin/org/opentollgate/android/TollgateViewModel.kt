@@ -69,6 +69,52 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     )
     val state: StateFlow<UiState> = _state
 
+    init {
+        // Pre-mint ecash from testnut on startup so the wallet is loaded
+        // before the user connects to any tollgate.
+        autoMintOnStartup()
+    }
+
+    /**
+     * Auto-mint ecash tokens from testnut (auto-settles invoices in ~3s).
+     * Runs in background on app launch. Stores token in wallet + sets as
+     * paymentToken so it's ready to spend immediately.
+     */
+    private fun autoMintOnStartup() = viewModelScope.launch(Dispatchers.IO) {
+        val testMint = "https://nofee.testnut.cashu.space"
+        val amount = 21L // 21 sats — enough for several tollgate steps
+        _state.update { it.copy(scanning = true) }
+        try {
+            Log.i(TAG, "autoMint: requesting $amount sats from $testMint…")
+            val token = node.autoMint(testMint, amount.toULong(), 30uL)
+            Log.i(TAG, "autoMint: success! token=${token.take(60)}…")
+            // Parse token value for wallet state
+            val tokenResult = parseCashuToken(token)
+            val (mintForWallet, value) = when (tokenResult) {
+                is TokenResult.Ok -> {
+                    val t = tokenResult.token
+                    (t.groups.firstOrNull()?.mint ?: testMint) to t.amountSat
+                }
+                is TokenResult.Error -> testMint to amount
+            }
+            _state.update {
+                it.copy(
+                    scanning = false,
+                    paymentToken = token,
+                    mintUrl = testMint,
+                    wallet = it.wallet
+                        .applyTx(mintForWallet, value, TxKind.RECEIVE, "Auto-minted $value sats from testnut"),
+                    error = null,
+                )
+            }
+            Log.i(TAG, "autoMint: wallet loaded with $value sats")
+        } catch (e: Exception) {
+            Log.e(TAG, "autoMint: failed — ${e.message}")
+            _state.update { it.copy(scanning = false) }
+            // Non-fatal — user can mint manually via Wallet screen
+        }
+    }
+
     fun onHostChange(host: String) = _state.update { it.copy(baseHost = host) }
     fun onMintChange(mint: String) = _state.update { it.copy(mintUrl = mint) }
     fun onTokenChange(token: String) = _state.update { it.copy(paymentToken = token) }

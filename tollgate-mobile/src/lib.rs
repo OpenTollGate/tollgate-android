@@ -721,4 +721,24 @@ impl TollgateMobileNode {
             .block_on(wallet::mint_tokens(&mint_url, &quote_id, amount_sat))
             .map_err(TollgateError::from)
     }
+
+    /// Auto-mint ecash from a test mint that auto-settles invoices.
+    ///
+    /// Requests a quote, polls until PAID (test mints like testnut auto-pay
+    /// within seconds), then mints tokens. Returns the `cashuA…` token string.
+    ///
+    /// Use this on app startup to pre-load the wallet before connecting to
+    /// a tollgate.
+    pub fn auto_mint(
+        &self,
+        mint_url: String,
+        amount_sat: u64,
+        max_wait_secs: u64,
+    ) -> Result<String, TollgateError> {
+        let (_quote_id, token) = self
+            .runtime
+            .block_on(wallet::auto_mint(&mint_url, amount_sat, max_wait_secs))
+            .map_err(TollgateError::from)?;
+        Ok(token)
+    }
 }
