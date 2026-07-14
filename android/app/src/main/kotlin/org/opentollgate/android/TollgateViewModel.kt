@@ -366,15 +366,36 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                 Log.d(TAG, "onPay: gateway detected, posting token...")
                 val result = V1GatewayClient.pay(s.baseHost, token, net)
                 Log.i(TAG, "onPay: result accepted=${result.accepted} error=${result.error} body=${result.rawJson.take(200)}")
-                _state.update {
-                    it.copy(
-                        paid = PaidView(v1Ad.pubkeyHex, result.accepted, v1Ad.pricePerStep),
-                        error = result.error,
-                    )
-                }
+                
                 if (result.accepted) {
-                    _state.update { it.copy(sessionStartedAt = System.currentTimeMillis()) }
+                    _state.update {
+                        it.copy(
+                            paid = PaidView(v1Ad.pubkeyHex, true, v1Ad.pricePerStep),
+                            error = null,
+                            sessionStartedAt = System.currentTimeMillis(),
+                        )
+                    }
                     startBalanceMonitor()
+                } else {
+                    // Payment failed — extract the gateway's error code + message
+                    val errMsg = result.error ?: extractGatewayError(result.rawJson)
+                    // If token was spent, clear it so we mint fresh next time
+                    val tokenSpent = errMsg.contains("spent", ignoreCase = true) ||
+                        errMsg.contains("gate-open-failed", ignoreCase = true)
+                    _state.update {
+                        it.copy(
+                            paid = PaidView(v1Ad.pubkeyHex, false, v1Ad.pricePerStep),
+                            error = errMsg,
+                            // Clear spent token so next pay mints fresh
+                            mintedToken = if (tokenSpent) null else it.mintedToken,
+                            paymentToken = if (tokenSpent) null else it.paymentToken,
+                        )
+                    }
+                    // Auto-mint a fresh token after spend failure
+                    if (tokenSpent) {
+                        Log.i(TAG, "onPay: token consumed, auto-minting fresh token...")
+                        autoMintOnStartup()
+                    }
                 }
             } else {
                 // Gateway unreachable — phone is NOT on the TollGate WiFi
@@ -883,4 +904,26 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Clear the last "Send" token banner on WalletScreen. */
     fun onDismissLastSent() = _state.update { it.copy(wallet = it.wallet.copy(lastSentToken = null)) }
+
+    /** Extract human-readable error from gateway JSON response. */
+    private fun extractGatewayError(json: String): String {
+        return try {
+            val obj = org.json.JSONObject(json)
+            val tags = obj.optJSONArray("tags") ?: return obj.optString("content", "payment failed")
+            var code: String? = null
+            for (i in 0 until tags.length()) {
+                val tag = tags.optJSONArray(i) ?: continue
+                if (tag.optString(0) == "code") code = tag.optString(1)
+            }
+            val content = obj.optString("content", "")
+            when (code) {
+                "payment-error-token-spent" -> "Token already spent — minting fresh tokens..."
+                "gate-open-failed" -> "Gateway verified payment but failed to open gate: $content"
+                "payment-processing-failed" -> "Payment processing failed: $content"
+                else -> content.ifBlank { code ?: "payment failed" }
+            }
+        } catch (_: Exception) {
+            "payment failed"
+        }
+    }
 }

@@ -240,8 +240,14 @@ pub async fn mint_tokens(
 
     // -- (f)(g) Unblind signatures into spendable proofs -------------------
 
-    let proofs = construct_proofs(mint_resp.signatures, rs, secrets, keys)
+    let mut proofs = construct_proofs(mint_resp.signatures, rs, secrets, keys)
         .map_err(|e| anyhow!("constructing proofs: {e}"))?;
+
+    // Strip DLEQ proofs — the gateway's Cashu parser rejects unknown fields.
+    // DLEQ is optional (NUT-12) and not needed for spending.
+    for p in &mut proofs {
+        p.dleq = None;
+    }
 
     // -- (h) Build TokenV3 and return serialized string ---------------------
 
