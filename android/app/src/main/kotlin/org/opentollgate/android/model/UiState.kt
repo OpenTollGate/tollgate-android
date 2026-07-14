@@ -2,14 +2,14 @@ package org.opentollgate.android.model
 
 /** Default Cashu mints supported by TollGate routers (from /etc/tollgate/config.json). */
 val DEFAULT_MINTS: List<String> = listOf(
-    "https://nofee.testnut.cashu.space",   // testnut — zero fees, default for testing
-    "https://testnut.cashu.exchange",      // alternate testnut
-    "https://mint.coinos.io",              // coinos production mint
+    "https://mint.coinos.io",              // coinos — accepted by most gateways, default
     "https://mint.minibits.cash/Bitcoin",  // minibits production mint
+    "https://nofee.testnut.cashu.space",   // testnut — zero fees, testing only
+    "https://testnut.cashu.exchange",      // alternate testnut
 )
 
-/** Primary default mint (testnut for dev/testing). */
-const val DEFAULT_MINT: String = "https://nofee.testnut.cashu.space"
+/** Primary default mint. coinos.io is accepted by production upstream gateways. */
+const val DEFAULT_MINT: String = "https://mint.coinos.io"
 
 /**
  * UI state for the TollGate dashboard. Mirrors the JS captive-portal SPA's
