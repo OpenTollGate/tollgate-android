@@ -55,6 +55,7 @@ object CashuMintClient {
         val amount: Long,
         val secret: String,   // hex
         val c: String,        // hex (compressed point C)
+        val id: String = "",  // keyset ID (hex) — needed for gateway to verify proofs
     )
 
     // ── Cashu API ──────────────────────────────────────────────────
@@ -214,7 +215,7 @@ object CashuMintClient {
             val cUnblinded = cBlindedPoint.multiply(r).normalize()
             val cHex = cUnblinded.getEncoded(true).toHex()
 
-            proofs.add(Proof(amount = amount, secret = secretHex, c = cHex))
+            proofs.add(Proof(amount = amount, secret = secretHex, c = cHex, id = keysetId))
         }
 
         // Build the Cashu token
@@ -268,23 +269,26 @@ object CashuMintClient {
 
     /**
      * Build a Cashu V3 token string from proofs.
-     * Format: cashuA<base64url(json({"token":[{"i":"mintUrl","p":[{"a":64,"s":"secret","c":"sig"}]}],"unit":"sat"}))>
+     * Format: cashuA<base64url(json({"token":[{"mint":"url","proofs":[{"amount":N,"secret":"hex","C":"hex"}]}],"unit":"sat"}))>
+     *
+     * CRITICAL: V3 JSON tokens MUST use full key names (mint/proofs/amount/secret/C).
+     * Short keys (i/p/a/s/c) are the V4 CBOR convention and are NOT recognized
+     * by V3 JSON decoders like gonuts-tollgate on the gateway side.
      */
     private fun buildToken(proofs: List<Proof>, mintUrl: String): String {
-        // Cashu v4 token format uses short keys per NUT-00 spec:
-        // {"token":[{"i":"mintUrl","p":[{"a":64,"s":"secret","c":"sig"}]}],"unit":"sat"}
         val proofsArray = JSONArray()
         for (p in proofs) {
             proofsArray.put(JSONObject().apply {
-                put("a", p.amount)
-                put("s", p.secret)
-                put("c", p.c)
+                put("amount", p.amount)
+                put("secret", p.secret)
+                put("C", p.c)
+                put("id", p.id)
             })
         }
 
         val tokenInner = JSONObject().apply {
-            put("i", mintUrl.trimEnd('/'))
-            put("p", proofsArray)
+            put("mint", mintUrl.trimEnd('/'))
+            put("proofs", proofsArray)
         }
 
         val outer = JSONObject().apply {
