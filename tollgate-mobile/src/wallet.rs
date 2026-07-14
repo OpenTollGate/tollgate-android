@@ -131,7 +131,7 @@ pub async fn check_quote(mint_url: &str, quote_id: &str) -> anyhow::Result<Strin
 /// This is the full NUT-04 minting flow:
 ///
 /// a) `GET {mint_url}/v1/keysets` — find the active `sat` keyset ID.  
-/// b) `GET {mint_url}/v1/keysets/{keyset_id}` — get the mint's public keys
+/// b) `GET {mint_url}/v1/keys/{keyset_id}` — get the mint's public keys
 ///    (needed to unblind the returned blind signatures).  
 /// c) Split `amount_sat` into powers of 2 (Cashu denomination).  
 /// d) For each denomination: generate a [`Secret`], call
@@ -173,9 +173,9 @@ pub async fn mint_tokens(
         .ok_or_else(|| anyhow!("no active sat keyset found at {base}"))?;
     let keyset_id: Id = keyset_info.id;
 
-    // -- (b) GET /v1/keysets/{id} — mint public keys ------------------------
+    // -- (b) GET /v1/keys/{id} — mint public keys ------------------------
 
-    let keys_url = format!("{base}/v1/keysets/{keyset_id}");
+    let keys_url = format!("{base}/v1/keys/{keyset_id}");
     let resp = client
         .get(&keys_url)
         .send()
@@ -313,3 +313,4 @@ mod tests {
         }
     }
 }
+

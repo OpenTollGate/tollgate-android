@@ -30,7 +30,7 @@ uniffi::setup_scaffolding!("tollgate_mobile");
 #[cfg(feature = "fips")]
 mod jni;
 
-mod wallet;
+pub mod wallet;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
