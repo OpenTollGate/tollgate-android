@@ -81,7 +81,9 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
      * paymentToken so it's ready to spend immediately.
      */
     private fun autoMintOnStartup() = viewModelScope.launch(Dispatchers.IO) {
-        val testMint = "https://nofee.testnut.cashu.space"
+        // Local FakeWallet mint — auto-settles Lightning invoices instantly.
+        // No real Lightning payment needed. Reachable from home WiFi.
+        val testMint = "http://192.168.2.33:4444"
         val amount = 21L // 21 sats — enough for several tollgate steps
         _state.update { it.copy(scanning = true) }
         try {
