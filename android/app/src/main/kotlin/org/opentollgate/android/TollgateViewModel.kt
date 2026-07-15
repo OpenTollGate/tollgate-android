@@ -55,6 +55,8 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
         const val TAG = "TollgateViewModel"
         /** Target ecash balance per mint (sats). Used by [topupAllMints]. */
         const val TARGET_BALANCE = TARGET_BALANCE_SATS
+        /** FakeWallet dev mint — reachable from TollGate WiFi subnet. */
+        const val FAKE_WALLET_URL = "http://10.230.237.203:4444"
     }
     val node: TollgateMobileNode = TollgateMobileNode(app.filesDir.absolutePath)
     private val wifiScanner = WifiTollGateScanner(app)
@@ -498,7 +500,8 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     // Payment failed — extract the gateway's error code + message
                     val errMsg = result.error ?: extractGatewayError(result.rawJson)
-                    // If token was spent, clear it so we mint fresh next time
+                    Log.w(TAG, "onPay: GATE FAILED. code=${errMsg.take(200)} body=${result.rawJson.take(500)}")
+                    // If token was spent, clear it so we mint fresh
                     val tokenSpent = errMsg.contains("spent", ignoreCase = true) ||
                         errMsg.contains("gate-open-failed", ignoreCase = true)
                     _state.update {
@@ -886,6 +889,32 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
 
         // Query initial balance
         refreshGatewayBalance()
+
+        // Step 5: Re-mint from FakeWallet — now reachable on TollGate subnet.
+        // The token minted at startup was from an external mint (nofee testnut,
+        // coinos, etc.) which the gateway may not be able to reach. FakeWallet
+        // at 10.230.237.203:4444 is on the same subnet as both the phone and
+        // the gateway, so both can verify it.
+        Log.i(TAG, "onConnectToWifi: re-minting from FakeWallet on TollGate subnet...")
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val token = node.autoMint(FAKE_WALLET_URL, 21uL, 30uL)
+                Log.i(TAG, "onConnectToWifi: FakeWallet re-mint OK, token=${token.take(40)}...")
+                _state.update {
+                    it.copy(
+                        paymentToken = token,
+                        mintUrl = FAKE_WALLET_URL,
+                        wallet = it.wallet.applyTx(
+                            FAKE_WALLET_URL, 21L, TxKind.RECEIVE,
+                            "Re-minted 21 sats from FakeWallet after TollGate WiFi connect",
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "onConnectToWifi: FakeWallet re-mint failed — ${e.message}")
+                // Non-fatal — fall back to startup token
+            }
+        }
     }
 
     /**
