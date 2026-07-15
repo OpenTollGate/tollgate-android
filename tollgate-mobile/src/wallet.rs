@@ -41,11 +41,11 @@ async fn create_wallet(mint_url: &str) -> anyhow::Result<Wallet> {
     // Random seed — required so each mint produces unique blinded messages.
     // A deterministic seed would produce identical secrets → mint rejects
     // with "Blinded Message is already signed" on second run.
+    // Uses getrandom crate (works on Android without /dev/urandom access).
     let seed: [u8; 64] = {
         let mut s = [0u8; 64];
-        use std::io::Read;
-        let mut f = std::fs::File::open("/dev/urandom").map_err(|e| anyhow!("opening /dev/urandom: {e}"))?;
-        f.read_exact(&mut s).map_err(|e| anyhow!("reading /dev/urandom: {e}"))?;
+        getrandom::fill(&mut s)
+            .map_err(|e| anyhow!("getting random seed: {e}"))?;
         s
     };
 
@@ -126,9 +126,9 @@ fn serialize_token(mint_url: &str, proofs: &[cdk::nuts::nut00::Proof]) -> anyhow
     let json = serde_json::to_string(&token)
         .map_err(|e| anyhow!("serializing token JSON: {e}"))?;
 
-    // base64url encode without padding, prefixed with "cashuA"
+    // Cashu tokens use URL-safe base64 (no padding): chars -_ instead of +/
     use base64::Engine;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(json);
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json);
     Ok(format!("cashuA{encoded}"))
 }
 

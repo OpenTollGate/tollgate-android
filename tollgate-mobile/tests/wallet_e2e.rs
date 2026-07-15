@@ -104,6 +104,44 @@ async fn test_auto_mint_full_flow() {
     );
 
     eprintln!("SUCCESS: auto_mint produced valid-looking token");
+
+    // CRITICAL: Verify the token is actually decodable.
+    // This catches base64 encoding bugs (e.g. STANDARD vs URL_SAFE_NO_PAD).
+    let token_json = {
+        let b64_part = &token["cashuA".len()..];
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(b64_part)
+            .expect("token must decode as URL_SAFE_NO_PAD base64")
+    };
+    let parsed: serde_json::Value = serde_json::from_slice(&token_json)
+        .expect("token must parse as valid JSON after base64 decode");
+
+    // Verify structure: { token: [{ mint: ..., proofs: [...] }], unit: "sat" }
+    assert_eq!(parsed["unit"], "sat", "token unit must be 'sat'");
+    let token_arr = parsed["token"].as_array()
+        .expect("token field must be an array");
+    assert!(!token_arr.is_empty(), "token array must not be empty");
+    let proofs = token_arr[0]["proofs"].as_array()
+        .expect("proofs must be an array");
+    assert!(!proofs.is_empty(), "proofs array must not be empty");
+
+    // Verify total amount matches what we minted
+    let total: u64 = proofs.iter()
+        .filter_map(|p| p["amount"].as_u64())
+        .sum();
+    assert_eq!(total, amount, "token total amount must match minted amount");
+
+    // Verify each proof has required fields: amount, id, secret, C
+    for (i, proof) in proofs.iter().enumerate() {
+        assert!(proof["amount"].as_u64().is_some(), "proof {i} missing amount");
+        assert!(proof["id"].as_str().is_some(), "proof {i} missing keyset id");
+        assert!(proof["secret"].as_str().is_some(), "proof {i} missing secret");
+        assert!(proof["C"].as_str().is_some(), "proof {i} missing signature C");
+    }
+
+    eprintln!("Token verified: {} proofs, total {total} sats, all fields present", proofs.len());
+    eprintln!("SUCCESS: token is fully decodable and structurally valid");
 }
 
 /// Test that mint_tokens produces a spendable token using auto_mint

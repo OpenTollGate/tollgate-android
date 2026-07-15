@@ -4963,6 +4963,7 @@ dependencies = [
  "cdk",
  "cdk-sqlite",
  "fips",
+ "getrandom 0.3.4",
  "hex",
  "jni",
  "libc",
