@@ -1,15 +1,30 @@
 package org.opentollgate.android.model
 
-/** Default Cashu mints supported by TollGate routers (from /etc/tollgate/config.json). */
-val DEFAULT_MINTS: List<String> = listOf(
-    "https://mint.coinos.io",              // coinos — accepted by most gateways, default
-    "https://mint.minibits.cash/Bitcoin",  // minibits production mint
-    "https://nofee.testnut.cashu.space",   // testnut — zero fees, testing only
-    "https://testnut.cashu.exchange",      // alternate testnut
+/**
+ * All mints the wallet auto-topups to 2121 sats on startup.
+ *
+ * FakeWallet auto-settles instantly (dev only). Public mints need real LN
+ * routing — auto_mint polls until PAID or timeout.
+ */
+data class MintConfig(val url: String, val label: String, val settleSecs: ULong)
+
+/** Target ecash balance per mint (sats). */
+const val TARGET_BALANCE_SATS: Long = 2121L
+
+/** Local FakeWallet — instant settle, dev/testing only. */
+private const val FAKE_WALLET = "http://10.230.237.203:4444"
+
+val ALL_MINTS: List<MintConfig> = listOf(
+    MintConfig(FAKE_WALLET, "FakeWallet (dev)", 30uL),
+    MintConfig("https://mint.coinos.io", "coinos.io", 120uL),
+    MintConfig("https://mint.minibits.cash/Bitcoin", "minibits", 120uL),
+    MintConfig("https://nofee.testnut.cashu.space", "nofee testnut", 120uL),
+    MintConfig("https://mint.lnwallet.app", "lnwallet.app", 120uL),
 )
 
-/** Primary default mint. coinos.io is accepted by production upstream gateways. */
-const val DEFAULT_MINT: String = "https://mint.coinos.io"
+/** Legacy flat list for backward compat (PayScreen, etc.). */
+val DEFAULT_MINTS: List<String> = ALL_MINTS.map { it.url }
+const val DEFAULT_MINT: String = FAKE_WALLET
 
 /**
  * UI state for the TollGate dashboard. Mirrors the JS captive-portal SPA's

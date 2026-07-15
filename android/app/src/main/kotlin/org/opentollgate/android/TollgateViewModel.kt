@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import org.opentollgate.android.model.ALL_MINTS
+import org.opentollgate.android.model.TARGET_BALANCE_SATS
 import org.opentollgate.android.model.BalanceView
 import org.opentollgate.android.model.ConsumeEventView
 import org.opentollgate.android.model.DetectedView
@@ -51,6 +53,8 @@ import uniffi.tollgate_mobile.TollgateMobileNode
 class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val TAG = "TollgateViewModel"
+        /** Target ecash balance per mint (sats). Used by [topupAllMints]. */
+        const val TARGET_BALANCE = TARGET_BALANCE_SATS
     }
     val node: TollgateMobileNode = TollgateMobileNode(app.filesDir.absolutePath)
     private val wifiScanner = WifiTollGateScanner(app)
@@ -70,54 +74,166 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<UiState> = _state
 
     init {
-        // Pre-mint ecash from testnut on startup so the wallet is loaded
-        // before the user connects to any tollgate.
-        autoMintOnStartup()
+        // Pre-mint ecash from all known mints on startup.
+        // Topup targets 2121 sats per mint so the wallet is loaded
+        // before connecting to any tollgate.
+        topupAllMints()
     }
 
     /**
-     * Auto-mint ecash tokens from testnut (auto-settles invoices in ~3s).
-     * Runs in background on app launch. Stores token in wallet + sets as
-     * paymentToken so it's ready to spend immediately.
+     * Auto-mint ecash from all known mints to reach [TARGET_BALANCE]
+     * (2121 sats) per mint. Runs in background on app launch.
+     *
+     * Each mint is tried **in parallel** — failures are non-fatal.
+     * FakeWallet settles instantly (30s timeout); public mints need LN
+     * routing (120s timeout). Per-mint success/failure is logged; the
+     * wallet is credited atomically as each mint completes.
      */
-    private fun autoMintOnStartup() = viewModelScope.launch(Dispatchers.IO) {
-        // Local FakeWallet mint — auto-settles Lightning invoices instantly.
-        // No real Lightning payment needed. Use ethernet IP reachable from
-        // both the phone (via tollgate WiFi) and the gateway itself.
-        // Mint listens on 0.0.0.0:4444 — reachable from both WiFi (192.168.2.x)
-        // and ethernet (10.230.237.x). Use WiFi IP since the phone is on home WiFi.
-        val testMint = "http://192.168.2.33:4444"
-        val amount = 21L // 21 sats — enough for several tollgate steps
+    private fun topupAllMints() = viewModelScope.launch(Dispatchers.IO) {
         _state.update { it.copy(scanning = true) }
+        Log.i(TAG, "topupAll: starting parallel mint to $TARGET_BALANCE sats across ${ALL_MINTS.size} mints")
+
         try {
-            Log.i(TAG, "autoMint: requesting $amount sats from $testMint…")
-            val token = node.autoMint(testMint, amount.toULong(), 30uL)
-            Log.i(TAG, "autoMint: success! token=${token.take(60)}…")
-            // Parse token value for wallet state
-            val tokenResult = parseCashuToken(token)
-            val (mintForWallet, value) = when (tokenResult) {
-                is TokenResult.Ok -> {
-                    val t = tokenResult.token
-                    (t.groups.firstOrNull()?.mint ?: testMint) to t.amountSat
-                }
-                is TokenResult.Error -> testMint to amount
+            coroutineScope {
+                ALL_MINTS.map { mint ->
+                    async(Dispatchers.IO) {
+                        val currentBal = state.value.wallet.balanceOf(mint.url)
+                        val needed = TARGET_BALANCE - currentBal
+                        if (needed <= 0) {
+                            Log.i(TAG, "topupAll: ${mint.label} already has $currentBal sats — skip")
+                            return@async
+                        }
+                        try {
+                            Log.i(TAG, "topupAll: minting $needed sats from ${mint.label}...")
+                            val token = node.autoMint(mint.url, needed.toULong(), mint.settleSecs)
+                            Log.i(TAG, "topupAll: ${mint.label} +$needed sats OK (token=${token.take(40)}…)")
+
+                            _state.update {
+                                it.copy(
+                                    wallet = it.wallet.applyTx(
+                                        mint.url, needed, TxKind.RECEIVE,
+                                        "Auto-topup $needed sats from ${mint.label}",
+                                    ),
+                                    paymentToken = token,
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "topupAll: ${mint.label} failed — ${e.message}")
+                            // Non-fatal — continue to next mint
+                        }
+                    }
+                }.awaitAll()
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "topupAll: unexpected error — ${e.message}")
+        }
+
+        _state.update { it.copy(scanning = false) }
+        val totalSats = state.value.wallet.totalSat
+        Log.i(TAG, "topupAll: complete. Total wallet balance: $totalSats sats")
+    }
+
+    // ── Manual wallet operations (called from WalletScreen) ─────────
+
+    /**
+     * Mint ecash from a specific mint. Calls [TollgateMobileNode.autoMint]
+     * in a coroutine on [Dispatchers.IO]. FakeWallet mints (192.168.* or
+     * 10.230.*) use a 30s settle timeout; public mints use 120s. On success
+     * the wallet is credited with [amountSat] and the returned token stored
+     * as [UiState.paymentToken].
+     */
+    fun onMintFrom(mintUrl: String, amountSat: Long) = viewModelScope.launch(Dispatchers.IO) {
+        if (amountSat <= 0) {
+            _state.update { it.copy(error = "amount must be positive") }
+            return@launch
+        }
+        val settleSecs: ULong = if (mintUrl.startsWith("http://192.168.") || mintUrl.startsWith("http://10.230.")) {
+            30uL
+        } else {
+            120uL
+        }
+        _state.update { it.copy(scanning = true, error = null) }
+        try {
+            Log.i(TAG, "onMintFrom: requesting $amountSat sats from $mintUrl (settle ${settleSecs}s)…")
+            val token = node.autoMint(mintUrl, amountSat.toULong(), settleSecs)
+            Log.i(TAG, "onMintFrom: success! token=${token.take(60)}…")
             _state.update {
                 it.copy(
                     scanning = false,
+                    wallet = it.wallet.applyTx(
+                        mintUrl, amountSat, TxKind.RECEIVE,
+                        "Minted $amountSat sats from $mintUrl",
+                    ),
+                    mintUrl = mintUrl,
                     paymentToken = token,
-                    mintUrl = testMint,
-                    wallet = it.wallet
-                        .applyTx(mintForWallet, value, TxKind.RECEIVE, "Auto-minted $value sats from testnut"),
                     error = null,
                 )
             }
-            Log.i(TAG, "autoMint: wallet loaded with $value sats")
         } catch (e: Exception) {
-            Log.e(TAG, "autoMint: failed — ${e.message}")
-            _state.update { it.copy(scanning = false) }
-            // Non-fatal — user can mint manually via Wallet screen
+            Log.e(TAG, "onMintFrom: failed — ${e.message}")
+            _state.update { it.copy(scanning = false, error = "Mint failed: ${e.message}") }
         }
+    }
+
+    /**
+     * Swap a Cashu token at [mintUrl] via [TollgateMobileNode.swapTokens].
+     * On success the new token is stored as [UiState.paymentToken].
+     */
+    fun onSwapToken(mintUrl: String, tokenStr: String) = viewModelScope.launch(Dispatchers.IO) {
+        _state.update { it.copy(error = null) }
+        try {
+            Log.i(TAG, "onSwapToken: swapping token at $mintUrl…")
+            val newToken = node.swapTokens(mintUrl, tokenStr)
+            Log.i(TAG, "onSwapToken: success! newToken=${newToken.take(60)}…")
+            _state.update {
+                it.copy(
+                    paymentToken = newToken,
+                    error = null,
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "onSwapToken: failed — ${e.message}")
+            _state.update { it.copy(error = "Swap failed: ${e.message}") }
+        }
+    }
+
+    /**
+     * Receive a Cashu token into the wallet at [mintUrl] via
+     * [TollgateMobileNode.receiveToken]. Credits the received amount to the
+     * per-mint balance in [UiState.wallet].
+     */
+    fun onReceiveIntoWallet(mintUrl: String, tokenStr: String) = viewModelScope.launch(Dispatchers.IO) {
+        _state.update { it.copy(error = null) }
+        try {
+            Log.i(TAG, "onReceiveIntoWallet: receiving token at $mintUrl…")
+            val satsReceived = node.receiveToken(mintUrl, tokenStr)
+            val amountLong = satsReceived.toLong()
+            Log.i(TAG, "onReceiveIntoWallet: success! received $amountLong sats")
+            _state.update {
+                it.copy(
+                    mintUrl = mintUrl,
+                    wallet = it.wallet.applyTx(
+                        mintUrl, amountLong, TxKind.RECEIVE,
+                        "Received $amountLong sats from $mintUrl",
+                    ),
+                    error = null,
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "onReceiveIntoWallet: failed — ${e.message}")
+            _state.update { it.copy(error = "Receive failed: ${e.message}") }
+        }
+    }
+
+    /**
+     * Manually trigger a parallel topup of all known mints to [TARGET_BALANCE]
+     * (2121 sats). Called from the Wallet screen's "Topup All" button. Delegates
+     * to [topupAllMints] which runs each mint concurrently on [Dispatchers.IO].
+     */
+    fun onTopupAll() {
+        topupAllMints()
     }
 
     fun onHostChange(host: String) = _state.update { it.copy(baseHost = host) }
@@ -397,7 +513,7 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                     // Auto-mint a fresh token after spend failure
                     if (tokenSpent) {
                         Log.i(TAG, "onPay: token consumed, auto-minting fresh token...")
-                        autoMintOnStartup()
+                        topupAllMints()
                     }
                 }
             } else {

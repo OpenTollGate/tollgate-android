@@ -43,10 +43,18 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import org.opentollgate.android.model.ALL_MINTS
+import org.opentollgate.android.model.TARGET_BALANCE_SATS
 import org.opentollgate.android.model.TxEntry
 import org.opentollgate.android.model.TxKind
 import org.opentollgate.android.model.UiState
 import org.opentollgate.android.util.stripScheme
+import uniffi.tollgate_mobile.TollgateMobileNode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -78,9 +86,14 @@ import java.util.Locale
 @Composable
 fun WalletScreen(
     state: UiState,
+    node: TollgateMobileNode,
     onReceiveToken: (String) -> Unit,
     onSend: (mint: String, amountSat: Long) -> Unit,
     onDismissLastSent: () -> Unit,
+    onMintFrom: (mintUrl: String, amountSat: Long) -> Unit,
+    onSwapToken: (mintUrl: String, tokenStr: String) -> Unit,
+    onReceiveIntoWallet: (mintUrl: String, tokenStr: String) -> Unit,
+    onTopupAll: () -> Unit,
 ) {
     Scaffold(topBar = { TopAppBar(title = { TollGateTitle(subtitle = "Wallet") }) }) { pad ->
         Column(
@@ -93,6 +106,14 @@ fun WalletScreen(
         ) {
             BalanceHero(state = state)
             MintBreakdownCard(state = state)
+            MintActionCard(
+                state = state,
+                node = node,
+                onMintFrom = onMintFrom,
+                onSwapToken = onSwapToken,
+                onReceiveIntoWallet = onReceiveIntoWallet,
+                onTopupAll = onTopupAll,
+            )
             ReceiveCard(state = state, onReceiveToken = onReceiveToken)
             SendCard(
                 state = state,
@@ -149,6 +170,163 @@ private fun MintBreakdownCard(state: UiState) {
                 TelemetryRow(label = stripScheme(row.mint), value = formatSats(row.balanceSat))
             }
         }
+    }
+}
+
+@Composable
+private fun MintActionCard(
+    state: UiState,
+    node: TollgateMobileNode,
+    onMintFrom: (mintUrl: String, amountSat: Long) -> Unit,
+    onSwapToken: (mintUrl: String, tokenStr: String) -> Unit,
+    onReceiveIntoWallet: (mintUrl: String, tokenStr: String) -> Unit,
+    onTopupAll: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var selectedMint by remember { mutableStateOf(ALL_MINTS.first().url) }
+    var tokenText by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("Ready.") }
+    var busy by remember { mutableStateOf(false) }
+
+    val mintLabel = ALL_MINTS.find { it.url == selectedMint }?.label ?: "custom"
+    val settleSecs = ALL_MINTS.find { it.url == selectedMint }?.settleSecs ?: 60uL
+
+    InfoCard(title = "Mint / Swap / Receive") {
+        // Target balance indicator
+        val currentBal = state.wallet.balanceOf(selectedMint)
+        Text(
+            "Target: $TARGET_BALANCE_SATS sats per mint | Balance: $currentBal sats",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        Spacer(Modifier.height(8.dp))
+
+        // Mint selector
+        ALL_MINTS.forEach { option ->
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 1.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = selectedMint == option.url,
+                    onClick = { if (!busy) selectedMint = option.url },
+                    enabled = !busy,
+                )
+                Spacer(Modifier.size(4.dp))
+                Text(
+                    "${option.label} (${state.wallet.balanceOf(option.url)} sats)",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = if (selectedMint == option.url) FontWeight.Bold else FontWeight.Normal,
+                )
+            }
+        }
+
+        // Custom URL field
+        OutlinedTextField(
+            value = selectedMint,
+            onValueChange = { if (!busy) selectedMint = it },
+            label = { Text("Mint URL") },
+            singleLine = true,
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(8.dp))
+
+        // Mint buttons row
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    if (busy) return@Button
+                    busy = true
+                    status = "Minting 21 from $mintLabel..."
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val token = node.autoMint(selectedMint, 21uL, settleSecs)
+                            tokenText = token
+                            status = "Minted 21 sats from $mintLabel"
+                            onMintFrom(selectedMint, 21L)
+                        } catch (e: Exception) {
+                            Log.e("MintActionCard", "mint: ${e.message}")
+                            status = "Mint failed: ${e.message}"
+                        } finally { busy = false }
+                    }
+                },
+                enabled = !busy,
+                modifier = Modifier.weight(1f),
+            ) { Text("Mint 21") }
+            Button(
+                onClick = {
+                    if (busy) return@Button
+                    busy = true
+                    status = "Topup all mints to $TARGET_BALANCE_SATS..."
+                    onTopupAll()
+                    scope.launch(Dispatchers.IO) {
+                        // Topup runs in VM — just track status here
+                        delay(500)
+                        status = "Topup running in background..."
+                        busy = false
+                    }
+                },
+                enabled = !busy,
+                modifier = Modifier.weight(1f),
+            ) { Text("Topup All") }
+        }
+
+        // Swap + Receive
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    if (busy) return@Button
+                    if (tokenText.isBlank()) { status = "Mint or paste a token first."; return@Button }
+                    busy = true
+                    status = "Swapping..."
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val newToken = node.swapTokens(selectedMint, tokenText)
+                            tokenText = newToken
+                            status = "Swap complete"
+                            onSwapToken(selectedMint, tokenText)
+                        } catch (e: Exception) {
+                            status = "Swap failed: ${e.message}"
+                        } finally { busy = false }
+                    }
+                },
+                enabled = !busy,
+                modifier = Modifier.weight(1f),
+            ) { Text("Swap") }
+            Button(
+                onClick = {
+                    if (busy) return@Button
+                    if (tokenText.isBlank()) { status = "Paste a token first."; return@Button }
+                    busy = true
+                    status = "Receiving..."
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val sats = node.receiveToken(selectedMint, tokenText)
+                            status = "Received $sats sats"
+                            onReceiveIntoWallet(selectedMint, tokenText)
+                        } catch (e: Exception) {
+                            status = "Receive failed: ${e.message}"
+                        } finally { busy = false }
+                    }
+                },
+                enabled = !busy,
+                modifier = Modifier.weight(1f),
+            ) { Text("Receive") }
+        }
+
+        // Token field
+        OutlinedTextField(
+            value = tokenText,
+            onValueChange = { tokenText = it },
+            label = { Text("Token (cashuA...)") },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 80.dp, max = 120.dp),
+            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            enabled = !busy,
+        )
+
+        Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+        if (busy) { Spacer(Modifier.height(4.dp)); Text("⏳ Working...", style = MaterialTheme.typography.labelSmall) }
     }
 }
 

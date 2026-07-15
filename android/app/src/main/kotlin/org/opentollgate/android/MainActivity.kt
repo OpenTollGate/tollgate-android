@@ -17,9 +17,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 Surface {
-                    // Minimal wallet-only UI: mint, swap, display tokens.
-                    // No tollgate scanner, no WiFi, no gateway detection, no VPN.
-                    WalletOnlyScreen(node = vm.node)
+                    // Full TollGate app: Discover, Pay, Wallet, Status, Settings.
+                    // Auto-mints ecash from all known testnut mints on startup.
+                    TollGateApp(vm)
                 }
             }
         }

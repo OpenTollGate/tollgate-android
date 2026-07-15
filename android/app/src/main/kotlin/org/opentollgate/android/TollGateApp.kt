@@ -126,9 +126,14 @@ fun TollGateApp(vm: TollgateViewModel) {
                 composable("wallet") {
                     WalletScreen(
                         state = state,
+                        node = vm.node,
                         onReceiveToken = vm::onReceiveToken,
                         onSend = vm::onSend,
                         onDismissLastSent = vm::onDismissLastSent,
+                        onMintFrom = vm::onMintFrom,
+                        onSwapToken = vm::onSwapToken,
+                        onReceiveIntoWallet = vm::onReceiveIntoWallet,
+                        onTopupAll = vm::onTopupAll,
                     )
                 }
                 composable("status") {
