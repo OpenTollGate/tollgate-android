@@ -18,10 +18,10 @@ fn mint_url() -> String {
 async fn test_swap_tokens() {
     let mint = mint_url();
     eprintln!("Minting 21 sats from {mint}...");
-    let (_, token) = wallet::auto_mint(&mint, 21, 30).expect("auto_mint should succeed");
+    let (_, token) = wallet::auto_mint(&mint, 21, 30).await.expect("auto_mint should succeed");
     eprintln!("Got token, swapping...");
 
-    let swapped = wallet::swap_tokens(&mint, &token).expect("swap should succeed");
+    let swapped = wallet::swap_tokens(&mint, &token).await.expect("swap should succeed");
     eprintln!("Swap complete, verifying token...");
 
     // Verify swapped token is decodable
@@ -116,13 +116,13 @@ async fn test_send_and_receive() {
 /// Test receive with invalid token should error.
 #[tokio::test]
 async fn test_receive_invalid_token() {
-    let result = wallet::receive_token("http://127.0.0.1:1", "garbage_not_a_token");
-    assert!(result.await.is_err(), "receive with invalid token should error");
+    let result = wallet::receive_token("http://127.0.0.1:1", "garbage_not_a_token").await;
+    assert!(result.is_err(), "receive with invalid token should error");
 }
 
 /// Test swap with invalid token should error.
 #[tokio::test]
 async fn test_swap_invalid_token() {
-    let result = wallet::swap_tokens("http://127.0.0.1:1", "garbage_not_a_token");
-    assert!(result.await.is_err(), "swap with invalid token should error");
+    let result = wallet::swap_tokens("http://127.0.0.1:1", "garbage_not_a_token").await;
+    assert!(result.is_err(), "swap with invalid token should error");
 }
