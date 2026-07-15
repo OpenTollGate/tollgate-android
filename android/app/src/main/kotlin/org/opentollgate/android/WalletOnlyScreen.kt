@@ -22,10 +22,9 @@ private const val TAG = "WalletOnlyScreen"
 fun WalletOnlyScreen(node: TollgateMobileNode) {
     val scope = rememberCoroutineScope()
 
-    var mintUrl by remember { mutableStateOf("http://10.230.237.203:4444") }
+    var mintUrl by remember { mutableStateOf("http://192.168.2.33:4444") }
     var tokenText by remember { mutableStateOf("") }
-    var sendAmount by remember { mutableStateOf("5") }
-    var status by remember { mutableStateOf("Ready. Tap a button to mint, swap, send, or receive.") }
+    var status by remember { mutableStateOf("Ready. Tap a button to mint or swap.") }
     var busy by remember { mutableStateOf(false) }
 
     Column(
@@ -119,72 +118,6 @@ fun WalletOnlyScreen(node: TollgateMobileNode) {
             enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Swap Token") }
-
-        // Send: mint 21 and send portion
-        HorizontalDivider(modifier = Modifier.fillMaxWidth())
-        Text("Send", style = MaterialTheme.typography.titleMedium)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = sendAmount,
-                onValueChange = { sendAmount = it },
-                label = { Text("Amount") },
-                singleLine = true,
-                modifier = Modifier.weight(1f),
-            )
-            Button(
-                onClick = {
-                    if (busy) return@Button
-                    val amt = sendAmount.toULongOrNull() ?: 0uL
-                    if (amt == 0uL) {
-                        status = "Enter a valid send amount"
-                        return@Button
-                    }
-                    busy = true
-                    status = "Minting 21 + sending $amt sats..."
-                    scope.launch(Dispatchers.IO) {
-                        try {
-                            val (mintToken, sendToken) = node.mintAndSend(mintUrl, 21uL, amt, 30uL)
-                            tokenText = sendToken
-                            status = "Sent $amt sats. Send token ready."
-                        } catch (e: Exception) {
-                            Log.e(TAG, "send failed: ${e.message}")
-                            status = "Send failed: ${e.message}"
-                        } finally { busy = false }
-                    }
-                },
-                enabled = !busy,
-            ) { Text("Mint + Send") }
-        }
-
-        // Receive
-        HorizontalDivider(modifier = Modifier.fillMaxWidth())
-        Text("Receive", style = MaterialTheme.typography.titleMedium)
-        Button(
-            onClick = {
-                if (busy) return@Button
-                if (tokenText.isBlank()) {
-                    status = "Paste a cashuA token above to receive."
-                    return@Button
-                }
-                busy = true
-                status = "Receiving token..."
-                scope.launch(Dispatchers.IO) {
-                    try {
-                        val amount = node.receiveToken(mintUrl, tokenText)
-                        status = "Received $amount sats"
-                    } catch (e: Exception) {
-                        Log.e(TAG, "receive failed: ${e.message}")
-                        status = "Receive failed: ${e.message}"
-                    } finally { busy = false }
-                }
-            },
-            enabled = !busy,
-            modifier = Modifier.fillMaxWidth(),
-        ) { Text("Receive Token") }
 
         // Token display / input
         HorizontalDivider(modifier = Modifier.fillMaxWidth())

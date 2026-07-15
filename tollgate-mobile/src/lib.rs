@@ -122,6 +122,13 @@ pub struct MintQuote {
     pub invoice: String,
 }
 
+/// Result of mint + send: the full mint token and the send token.
+#[derive(uniffi::Record, Clone, Debug)]
+pub struct MintAndSendResult {
+    pub mint_token: String,
+    pub send_token: String,
+}
+
 /// Errors surfaced across the FFI boundary. `reason` is a short human string.
 #[derive(uniffi::Enum, Error, Debug)]
 pub enum TollgateError {
@@ -776,10 +783,15 @@ impl TollgateMobileNode {
         mint_amount: u64,
         send_amount: u64,
         max_wait_secs: u64,
-    ) -> Result<(String, String), TollgateError> {
-        self.runtime
+    ) -> Result<MintAndSendResult, TollgateError> {
+        let (mint_token, send_token) = self
+            .runtime
             .block_on(wallet::mint_and_send(&mint_url, mint_amount, send_amount, max_wait_secs))
-            .map_err(TollgateError::from)
+            .map_err(TollgateError::from)?;
+        Ok(MintAndSendResult {
+            mint_token,
+            send_token,
+        })
     }
 }
 
