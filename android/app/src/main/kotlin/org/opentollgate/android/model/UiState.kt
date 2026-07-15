@@ -12,7 +12,7 @@ data class MintConfig(val url: String, val label: String, val settleSecs: ULong)
 const val TARGET_BALANCE_SATS: Long = 2121L
 
 /** Local FakeWallet — instant settle, dev/testing only. */
-private const val FAKE_WALLET = "http://10.230.237.203:4444"
+private const val FAKE_WALLET = "http://192.168.2.33:4444"
 
 val ALL_MINTS: List<MintConfig> = listOf(
     MintConfig(FAKE_WALLET, "FakeWallet (dev)", 30uL),
