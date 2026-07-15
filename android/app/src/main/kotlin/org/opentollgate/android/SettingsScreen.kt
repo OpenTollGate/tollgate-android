@@ -56,7 +56,7 @@ import org.opentollgate.android.util.shortPubkey
 fun SettingsScreen(state: UiState) {
     var showIdentity by remember { mutableStateOf(false) }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Settings") }) }) { pad ->
+    Scaffold(topBar = { TopAppBar(title = { TollGateTitle(subtitle = "Settings") }) }) { pad ->
         Column(
             Modifier
                 .fillMaxSize()

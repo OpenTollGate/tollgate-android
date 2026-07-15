@@ -1,15 +1,18 @@
-//! Test: mint tokens from local mint and verify token format is cashuA (JSON).
+//! Test: mint tokens from local FakeWallet and POST to gateway.
 
 use tollgate_mobile::wallet;
 
 #[tokio::main]
 async fn main() {
-    let mint_url = "http://localhost:4444";
-    let amount: u64 = 10;
+    let args: Vec<String> = std::env::args().collect();
+    let mint_url = args.get(1).map(|s| s.as_str()).unwrap_or("http://10.230.237.203:4444");
+    let amount: u64 = args.get(2)
+        .map(|s| s.parse().unwrap_or(21))
+        .unwrap_or(21);
 
-    println!("Testing auto_mint: {mint_url} ({amount} sats)\n");
+    println!("Testing CDK auto_mint: {mint_url} ({amount} sats)\n");
 
-    let (quote_id, token) = match wallet::auto_mint(mint_url, amount, 30).await {
+    let (_quote_id, token) = match wallet::auto_mint(mint_url, amount, 30).await {
         Ok(result) => result,
         Err(e) => {
             eprintln!("FAIL: {e}");
@@ -17,18 +20,14 @@ async fn main() {
         }
     };
 
-    println!("Quote: {quote_id}");
-    println!("Token prefix: {}", &token[..10]);
-
     if token.starts_with("cashuA") {
         println!("PASS: cashuA (JSON) format");
     } else if token.starts_with("cashuB") {
-        println!("FAIL: cashuB (CBOR) — Kotlin parser won't handle this");
+        println!("FAIL: cashuB (CBOR)");
     } else {
         println!("FAIL: unknown format");
     }
 
-    // The Rust TokenV3::to_string() produces cashuA by default
-    // Just print the token so we can verify externally
+    // Print full token for external verification
     println!("\nFULL_TOKEN:\n{token}");
 }

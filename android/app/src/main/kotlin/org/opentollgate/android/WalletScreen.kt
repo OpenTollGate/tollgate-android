@@ -82,7 +82,7 @@ fun WalletScreen(
     onSend: (mint: String, amountSat: Long) -> Unit,
     onDismissLastSent: () -> Unit,
 ) {
-    Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Wallet") }) }) { pad ->
+    Scaffold(topBar = { TopAppBar(title = { TollGateTitle(subtitle = "Wallet") }) }) { pad ->
         Column(
             Modifier
                 .fillMaxSize()

@@ -1,3 +1,10 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.TollGate" parent="android:Theme.Material.Light.NoActionBar" />
+    <!--
+      Dark Material base theme so the system chrome (status bar, navigation
+      bar, window background splash before Compose attaches) matches the
+      TollGate dark-navy brand palette. The Compose MaterialTheme in
+      TollGateApp.kt supplies the full branded colorScheme; this XML theme
+      only governs the pre-Compose window and system bars.
+    -->
+    <style name="Theme.TollGate" parent="android:Theme.Material.NoActionBar" />
 </resources>

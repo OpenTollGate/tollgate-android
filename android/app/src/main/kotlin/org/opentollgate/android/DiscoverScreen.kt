@@ -83,7 +83,7 @@ fun DiscoverScreen(
         if (state.discovered.isEmpty() && !state.scanning) onScan()
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Discover") }) }) { pad ->
+    Scaffold(topBar = { TopAppBar(title = { TollGateTitle(subtitle = "Discover") }) }) { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {
             ScanBar(
                 scanning = state.scanning,

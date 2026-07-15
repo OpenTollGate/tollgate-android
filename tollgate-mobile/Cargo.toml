@@ -30,6 +30,9 @@ hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 cashu = { workspace = true }
+cdk = { workspace = true }
+cdk-sqlite = { workspace = true }
+base64 = "0.22"
 secp256k1 = { workspace = true }
 tracing = { workspace = true }
 uniffi = { workspace = true }

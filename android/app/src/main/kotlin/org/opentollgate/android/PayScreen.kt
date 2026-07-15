@@ -92,7 +92,7 @@ fun PayScreen(
     onRequestInvoice: () -> Unit,
     onCancelMinting: () -> Unit,
 ) {
-    Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Pay") }) }) { pad ->
+    Scaffold(topBar = { TopAppBar(title = { TollGateTitle(subtitle = "Pay") }) }) { pad ->
         Column(
             Modifier
                 .fillMaxSize()

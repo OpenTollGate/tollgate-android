@@ -1,56 +1,135 @@
-//! Real Cashu wallet operations — minting ecash tokens from a Cashu mint.
+//! Cashu wallet operations via CDK Wallet API.
 //!
-//! Replaces the broken Kotlin `CashuMintClient.kt` that hand-rolled blind
-//! signatures incorrectly. These functions use the `cashu` crate's correct
-//! DHKE primitives (`blind_message`, `construct_proofs`) so the resulting
-//! tokens are cryptographically valid and spendable at any spec-compliant
-//! Cashu mint.
+//! Uses `cdk::Wallet` which handles keyset IDs, DHKE, token serialization,
+//! and all NUT-04 flow correctly. Replaces the hand-rolled crypto that had
+//! keyset ID truncation and token format issues.
 //!
 //! Flow (NUT-04 minting):
-//! 1. Request a mint quote (LN invoice) via POST /v1/mint/quote/bolt11
-//! 2. User pays the invoice
-//! 3. Mint ecash tokens via POST /v1/mint/bolt11 (blind signature exchange)
+//! 1. Request a mint quote (LN invoice) via Wallet::mint_quote
+//! 2. User pays the invoice (or FakeWallet auto-pays)
+//! 3. Mint ecash tokens via Wallet::mint
+//! 4. Serialize proofs to cashuA token string
 
 use std::str::FromStr;
+use std::sync::Arc;
 
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 
-use cashu::dhke::{blind_message, construct_proofs};
-use cashu::mint_url::MintUrl;
-use cashu::nuts::nut00::{BlindedMessage, TokenV3};
-use cashu::nuts::nut04::{MintRequest, MintResponse};
-use cashu::nuts::nut23::{MintQuoteBolt11Request, MintQuoteBolt11Response};
-use cashu::nuts::{CurrencyUnit, Id, KeysetResponse, KeysResponse};
-use cashu::secret::Secret;
-use cashu::Amount;
+use cdk::amount::SplitTarget;
+use cdk::mint_url::MintUrl;
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
+use cdk::wallet::{Wallet, WalletBuilder};
+use cdk_sqlite::wallet::memory;
+use serde::Serialize;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Build a reqwest client with a reasonable timeout.
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+/// Build a CDK Wallet for a given mint URL.
+///
+/// Uses an in-memory database (no persistence needed — tokens are returned
+/// as strings immediately after minting).
+async fn create_wallet(mint_url: &str) -> anyhow::Result<Wallet> {
+    let mint_url = MintUrl::from_str(mint_url)
+        .map_err(|e| anyhow!("bad mint url '{mint_url}': {e}"))?;
+
+    let localstore = memory::empty()
+        .await
+        .map_err(|e| anyhow!("creating in-memory db: {e}"))?;
+
+    // Random seed — required so each mint produces unique blinded messages.
+    // A deterministic seed would produce identical secrets → mint rejects
+    // with "Blinded Message is already signed" on second run.
+    let seed: [u8; 64] = {
+        let mut s = [0u8; 64];
+        use std::io::Read;
+        let mut f = std::fs::File::open("/dev/urandom").map_err(|e| anyhow!("opening /dev/urandom: {e}"))?;
+        f.read_exact(&mut s).map_err(|e| anyhow!("reading /dev/urandom: {e}"))?;
+        s
+    };
+
+    let wallet = WalletBuilder::new()
+        .mint_url(mint_url)
+        .unit(CurrencyUnit::Sat)
+        .localstore(Arc::new(localstore))
+        .seed(seed)
         .build()
-        .expect("reqwest client builds with valid defaults")
+        .map_err(|e| anyhow!("building CDK wallet: {e}"))?;
+
+    Ok(wallet)
 }
 
-/// Split a u64 amount into powers of 2 (the Cashu denomination scheme).
+/// Rewrite localhost/LAN URLs to the ethernet IP the gateway can reach.
 ///
-/// e.g. 13 → [1, 4, 8], 7 → [1, 2, 4], 1 → [1].
-fn split_to_powers_of_2(amount: u64) -> Vec<u64> {
-    let mut parts = Vec::new();
-    let mut denom: u64 = 1;
-    let mut remaining = amount;
-    while remaining > 0 {
-        if remaining & denom != 0 {
-            parts.push(denom);
-            remaining &= !denom;
-        }
-        denom <<= 1;
-    }
-    parts
+/// The phone mints from 192.168.2.33:4444 (home WiFi), but the gateway
+/// (on ethernet subnet 10.230.237.x) can only reach us via 10.230.237.203:4444.
+fn gateway_reachable_url(mint_url: &str) -> String {
+    mint_url
+        .replace("localhost", "10.230.237.203")
+        .replace("192.168.2.33", "10.230.237.203")
+}
+
+// ---------------------------------------------------------------------------
+// Token serialization (full keyset IDs, not short format)
+// ---------------------------------------------------------------------------
+
+/// Proof JSON for manual token serialization.
+/// Uses FULL v2 keyset IDs so Nutshell mints can process swaps without
+/// short-to-long resolution.
+#[derive(Serialize)]
+struct ProofJson {
+    amount: u64,
+    id: String,
+    secret: String,
+    #[serde(rename = "C")]
+    c: String,
+}
+
+/// TokenV3 JSON with full keyset IDs.
+#[derive(Serialize)]
+struct TokenV3Json {
+    token: Vec<TokenV3TokenJson>,
+    unit: String,
+}
+
+#[derive(Serialize)]
+struct TokenV3TokenJson {
+    mint: String,
+    proofs: Vec<ProofJson>,
+}
+
+/// Serialize proofs to a `cashuA...` token string with FULL v2 keyset IDs.
+///
+/// This bypasses `TokenV3::new()` which converts to short keyset IDs (8-byte
+/// prefix). The Nutshell mint's swap endpoint expects full 32-byte v2 keyset
+/// IDs, and the gateway (gonuts) passes them through without resolution.
+fn serialize_token(mint_url: &str, proofs: &[cdk::nuts::nut00::Proof]) -> anyhow::Result<String> {
+    let proof_json: Vec<ProofJson> = proofs
+        .iter()
+        .map(|p| ProofJson {
+            amount: u64::from(p.amount),
+            id: p.keyset_id.to_string(),
+            secret: p.secret.to_string(),
+            c: p.c.to_string(),
+        })
+        .collect();
+
+    let token = TokenV3Json {
+        token: vec![TokenV3TokenJson {
+            mint: mint_url.to_string(),
+            proofs: proof_json,
+        }],
+        unit: "sat".to_string(),
+    };
+
+    let json = serde_json::to_string(&token)
+        .map_err(|e| anyhow!("serializing token JSON: {e}"))?;
+
+    // base64url encode without padding, prefixed with "cashuA"
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(json);
+    Ok(format!("cashuA{encoded}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -59,241 +138,137 @@ fn split_to_powers_of_2(amount: u64) -> Vec<u64> {
 
 /// Request a Lightning mint quote from the mint.
 ///
-/// `POST {mint_url}/v1/mint/quote/bolt11` with `{"amount": N, "unit": "sat"}`.
-///
 /// Returns `(quote_id, bolt11_invoice)` — the user must pay the invoice before
 /// calling [`mint_tokens`].
 pub async fn request_quote(
     mint_url: &str,
     amount_sat: u64,
 ) -> anyhow::Result<(String, String)> {
-    let client = http_client();
-    let url = format!(
-        "{}/v1/mint/quote/bolt11",
-        mint_url.trim_end_matches('/')
-    );
-
-    let req = MintQuoteBolt11Request {
-        amount: Amount::from(amount_sat),
-        unit: CurrencyUnit::Sat,
-        description: None,
-        pubkey: None,
-    };
-
-    let resp = client
-        .post(&url)
-        .json(&req)
-        .send()
+    let wallet = create_wallet(mint_url).await?;
+    let quote = wallet
+        .mint_quote(
+            PaymentMethod::BOLT11,
+            Some(cdk::Amount::from(amount_sat)),
+            None,
+            None,
+        )
         .await
-        .with_context(|| format!("posting to {url}"))?
-        .error_for_status()
-        .context("mint quote request returned an error status")?;
+        .map_err(|e| anyhow!("mint_quote: {e}"))?;
 
-    let quote: MintQuoteBolt11Response<String> = resp
-        .json()
-        .await
-        .context("parsing mint quote response")?;
-
-    Ok((quote.quote, quote.request))
+    Ok((quote.id, quote.request))
 }
 
 /// Check the state of a previously requested mint quote.
 ///
-/// `GET {mint_url}/v1/mint/quote/bolt11/{quote_id}`.
-///
 /// Returns the state string: `"UNPAID"`, `"PAID"`, or `"ISSUED"`.
+///
+/// Note: this creates a fresh wallet so it can only check quotes via the
+/// mint's REST API (fetch_mint_quote), not local storage.
 pub async fn check_quote(mint_url: &str, quote_id: &str) -> anyhow::Result<String> {
-    let client = http_client();
-    let url = format!(
-        "{}/v1/mint/quote/bolt11/{}",
-        mint_url.trim_end_matches('/'),
-        quote_id
-    );
-
-    let resp = client
-        .get(&url)
-        .send()
+    let wallet = create_wallet(mint_url).await?;
+    let quote = wallet
+        .fetch_mint_quote(quote_id, Some(PaymentMethod::BOLT11))
         .await
-        .with_context(|| format!("getting {url}"))?
-        .error_for_status()
-        .context("check quote request returned an error status")?;
-
-    let quote: MintQuoteBolt11Response<String> = resp
-        .json()
-        .await
-        .context("parsing check quote response")?;
+        .map_err(|e| anyhow!("fetch_mint_quote: {e}"))?;
 
     Ok(quote.state.to_string())
 }
 
 /// Mint ecash tokens for a paid quote.
 ///
-/// This is the full NUT-04 minting flow:
+/// Uses CDK Wallet::mint which handles the full NUT-04 blind signature
+/// exchange with correct keyset IDs and proof construction.
 ///
-/// a) `GET {mint_url}/v1/keysets` — find the active `sat` keyset ID.  
-/// b) `GET {mint_url}/v1/keys/{keyset_id}` — get the mint's public keys
-///    (needed to unblind the returned blind signatures).  
-/// c) Split `amount_sat` into powers of 2 (Cashu denomination).  
-/// d) For each denomination: generate a [`Secret`], call
-///    [`blind_message`] to produce `(B_, r)`.  
-/// e) `POST {mint_url}/v1/mint/bolt11` with the blinded outputs.  
-/// f) Parse the blind signatures (`C_`) from the response.  
-/// g) Call [`construct_proofs`] to unblind into spendable proofs.  
-/// h) Build a [`TokenV3`] from the proofs and return `token.to_string()`.
-///
-/// The returned string is a `cashuA…` encoded token that can be spent or
-/// transferred.
+/// The returned string is a `cashuA…` encoded token.
 pub async fn mint_tokens(
     mint_url: &str,
     quote_id: &str,
-    amount_sat: u64,
+    _amount_sat: u64,
 ) -> anyhow::Result<String> {
-    let client = http_client();
-    let base = mint_url.trim_end_matches('/');
+    let wallet = create_wallet(mint_url).await?;
 
-    // -- (a) GET /v1/keysets — find active sat keyset ------------------------
-
-    let keysets_url = format!("{base}/v1/keysets");
-    let resp = client
-        .get(&keysets_url)
-        .send()
+    // Register the quote in the wallet's localstore (required before mint)
+    wallet
+        .fetch_mint_quote(quote_id, Some(PaymentMethod::BOLT11))
         .await
-        .with_context(|| format!("getting {keysets_url}"))?
-        .error_for_status()
-        .context("keysets request returned an error status")?;
-    let keysets: KeysetResponse = resp
-        .json()
+        .map_err(|e| anyhow!("fetch_mint_quote before mint: {e}"))?;
+
+    // Mint — CDK handles keysets, DHKE, proof construction
+    let proofs = wallet
+        .mint(quote_id, SplitTarget::None, None)
         .await
-        .context("parsing keysets response")?;
+        .map_err(|e| anyhow!("mint: {e}"))?;
 
-    let keyset_info = keysets
-        .keysets
-        .iter()
-        .find(|k| k.active && k.unit == CurrencyUnit::Sat)
-        .ok_or_else(|| anyhow!("no active sat keyset found at {base}"))?;
-    let keyset_id: Id = keyset_info.id;
-
-    // -- (b) GET /v1/keys/{id} — mint public keys ------------------------
-
-    let keys_url = format!("{base}/v1/keys/{keyset_id}");
-    let resp = client
-        .get(&keys_url)
-        .send()
-        .await
-        .with_context(|| format!("getting {keys_url}"))?
-        .error_for_status()
-        .context("keys request returned an error status")?;
-    let keys_resp: KeysResponse = resp
-        .json()
-        .await
-        .context("parsing keys response")?;
-
-    let keys = keys_resp
-        .keysets
-        .iter()
-        .find(|k| k.id == keyset_id)
-        .map(|k| &k.keys)
-        .ok_or_else(|| anyhow!("keyset {keyset_id} not found in keys response"))?;
-
-    // -- (c)(d) Split amount into powers of 2 and blind each ----------------
-
-    let amounts = split_to_powers_of_2(amount_sat);
-
-    let mut outputs = Vec::with_capacity(amounts.len());
-    let mut rs = Vec::with_capacity(amounts.len());
-    let mut secrets = Vec::with_capacity(amounts.len());
-
-    for amt in &amounts {
-        let secret = Secret::generate();
-        let (b_, r) = blind_message(secret.as_bytes(), None)
-            .map_err(|e| anyhow!("blinding message: {e}"))?;
-
-        outputs.push(BlindedMessage::new(
-            Amount::from(*amt),
-            keyset_id,
-            b_,
-        ));
-        rs.push(r);
-        secrets.push(secret);
-    }
-
-    // -- (e) POST /v1/mint/bolt11 — exchange blinded messages --------------
-
-    let mint_endpoint = format!("{base}/v1/mint/bolt11");
-    let req = MintRequest {
-        quote: quote_id.to_string(),
-        outputs,
-        signature: None,
-    };
-    let resp = client
-        .post(&mint_endpoint)
-        .json(&req)
-        .send()
-        .await
-        .with_context(|| format!("posting to {mint_endpoint}"))?
-        .error_for_status()
-        .context("mint request returned an error status")?;
-    let mint_resp: MintResponse = resp
-        .json()
-        .await
-        .context("parsing mint response")?;
-
-    // -- (f)(g) Unblind signatures into spendable proofs -------------------
-
-    let mut proofs = construct_proofs(mint_resp.signatures, rs, secrets, keys)
-        .map_err(|e| anyhow!("constructing proofs: {e}"))?;
-
-    // Strip DLEQ proofs — the gateway's Cashu parser rejects unknown fields.
-    // DLEQ is optional (NUT-12) and not needed for spending.
-    for p in &mut proofs {
-        p.dleq = None;
-    }
-
-    // -- (h) Build TokenV3 and return serialized string ---------------------
-
-    let mint = MintUrl::from_str(mint_url).map_err(|e| anyhow!("bad mint url: {e}"))?;
-    let token = TokenV3::new(mint, proofs, None, Some(CurrencyUnit::Sat))
-        .map_err(|e| anyhow!("building token: {e}"))?;
-
-    Ok(token.to_string())
+    // Build token with gateway-reachable mint URL and FULL keyset IDs
+    let token_mint_url = gateway_reachable_url(mint_url);
+    Ok(serialize_token(&token_mint_url, &proofs)?)
 }
 
 /// Auto-mint ecash from a test mint that auto-settles invoices.
 ///
-/// This is the full one-shot flow:
+/// Full one-shot flow using a SINGLE CDK Wallet (required so the quote
+/// is in localstore for mint):
 /// 1. Request a mint quote (get LN invoice)
-/// 2. Poll the quote until state is "PAID" (test mints like testnut auto-pay)
-/// 3. Mint tokens via the NUT-04 blind signature exchange
-///
-/// `max_wait_secs` controls how long to wait for the quote to become PAID.
+/// 2. Poll the quote until state is "PAID" (test mints auto-pay)
+/// 3. Mint tokens via Wallet::mint
+/// 4. Serialize to cashuA token string
 pub async fn auto_mint(
     mint_url: &str,
     amount_sat: u64,
     max_wait_secs: u64,
 ) -> anyhow::Result<(String, String)> {
-    // Step 1: Request quote
-    let (quote_id, _invoice) = request_quote(mint_url, amount_sat).await?;
+    // Use a single wallet for the entire flow — quote must be in localstore for mint
+    let wallet = create_wallet(mint_url).await?;
+
+    // Step 1: Request quote via CDK Wallet
+    let quote = wallet
+        .mint_quote(
+            PaymentMethod::BOLT11,
+            Some(cdk::Amount::from(amount_sat)),
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| anyhow!("mint_quote: {e}"))?;
+
+    let quote_id = quote.id;
 
     // Step 2: Poll until PAID
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(max_wait_secs);
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
 
-        let state = check_quote(mint_url, &quote_id).await?;
-        match state.as_str() {
+        let fetched = wallet
+            .fetch_mint_quote(&quote_id, Some(PaymentMethod::BOLT11))
+            .await
+            .map_err(|e| anyhow!("polling quote: {e}"))?;
+
+        match fetched.state.to_string().as_str() {
             "PAID" => break,
             "ISSUED" => {
-                return Err(anyhow!("quote {quote_id} already issued — tokens were already minted"));
+                return Err(anyhow!(
+                    "quote {quote_id} already issued — tokens were already minted"
+                ));
             }
             "UNPAID" if std::time::Instant::now() >= deadline => {
-                return Err(anyhow!("quote {quote_id} not paid after {max_wait_secs}s"));
+                return Err(anyhow!(
+                    "quote {quote_id} not paid after {max_wait_secs}s"
+                ));
             }
             _ => {}
         }
     }
 
     // Step 3: Mint tokens
-    let token = mint_tokens(mint_url, &quote_id, amount_sat).await?;
+    let proofs = wallet
+        .mint(&quote_id, SplitTarget::None, None)
+        .await
+        .map_err(|e| anyhow!("mint: {e}"))?;
+
+    // Step 4: Serialize with full keyset IDs
+    let token_mint_url = gateway_reachable_url(mint_url);
+    let token = serialize_token(&token_mint_url, &proofs)?;
+
     Ok((quote_id, token))
 }
 
@@ -302,21 +277,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_split_to_powers_of_2() {
-        assert_eq!(split_to_powers_of_2(0), Vec::<u64>::new());
-        assert_eq!(split_to_powers_of_2(1), vec![1]);
-        assert_eq!(split_to_powers_of_2(2), vec![2]);
-        assert_eq!(split_to_powers_of_2(3), vec![1, 2]);
-        assert_eq!(split_to_powers_of_2(7), vec![1, 2, 4]);
-        assert_eq!(split_to_powers_of_2(13), vec![1, 4, 8]);
-        assert_eq!(split_to_powers_of_2(64), vec![64]);
-        assert_eq!(split_to_powers_of_2(100), vec![4, 32, 64]);
-
-        // Verify sums
-        for amt in [1u64, 5, 21, 100, 1000, 65535, 1_000_000] {
-            let parts = split_to_powers_of_2(amt);
-            assert_eq!(parts.iter().sum::<u64>(), amt, "sum mismatch for {amt}");
-        }
+    fn test_gateway_reachable_url() {
+        assert_eq!(
+            gateway_reachable_url("http://localhost:4444"),
+            "http://10.230.237.203:4444"
+        );
+        assert_eq!(
+            gateway_reachable_url("http://192.168.2.33:4444"),
+            "http://10.230.237.203:4444"
+        );
+        // Already-reachable URL unchanged
+        assert_eq!(
+            gateway_reachable_url("http://10.230.237.203:4444"),
+            "http://10.230.237.203:4444"
+        );
     }
 }
-

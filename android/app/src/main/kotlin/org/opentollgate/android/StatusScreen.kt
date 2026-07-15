@@ -60,7 +60,7 @@ fun StatusScreen(
     state: UiState,
     onStop: () -> Unit,
 ) {
-    Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Status") }) }) { pad ->
+    Scaffold(topBar = { TopAppBar(title = { TollGateTitle(subtitle = "Status") }) }) { pad ->
         Column(
             Modifier
                 .fillMaxSize()
