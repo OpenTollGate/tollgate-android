@@ -1,0 +1,21 @@
+appId: org.opentollgate.android
+---
+- launchApp
+- assertVisible: "Discover"
+- tapOn: "Scan"
+- extendedWaitUntil:
+    visible: "Connect"
+    timeout: 15000
+- tapOn: "Connect"
+- assertVisible: "Pay"
+- assertVisible: "Detect"
+- tapOn: "Detect"
+- extendedWaitUntil:
+    visible: "Pay"
+    timeout: 10000
+- tapOn:
+    text: "Pay"
+    repeat: 1
+- extendedWaitUntil:
+    visible: "Access granted"
+    timeout: 30000

@@ -1,0 +1,8 @@
+appId: org.opentollgate.android
+---
+- launchApp
+- assertVisible: "Discover"
+- tapOn: "Scan"
+- waitForVisibilityToShowBeTrue:
+    id: .*peer.*|.*candidate.*
+    timeout: 10000

@@ -1,0 +1,8 @@
+appId: org.opentollgate.android
+---
+- launchApp
+- assertVisible: "Discover"
+- assertVisible: "Pay"
+- assertVisible: "Wallet"
+- assertVisible: "Status"
+- assertVisible: "Settings"

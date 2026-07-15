@@ -1,0 +1,7 @@
+appId: org.opentollgate.android
+---
+- launchApp
+- tapOn: "Status"
+- assertVisible: "Status"
+- assertVisible: "Session"
+- assertVisible: "Stop"

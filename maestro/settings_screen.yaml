@@ -1,0 +1,7 @@
+appId: org.opentollgate.android
+---
+- launchApp
+- tapOn: "Settings"
+- assertVisible: "Settings"
+- assertVisible: "Identity"
+- assertVisible: "About"
