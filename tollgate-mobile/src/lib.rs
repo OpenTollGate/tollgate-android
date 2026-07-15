@@ -742,3 +742,119 @@ impl TollgateMobileNode {
         Ok(token)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tempdir() -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "tollgate-lib-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    // -- PriceView::cost_scaled -------------------------------------------------
+
+    #[test]
+    fn test_cost_scaled_per_unit_only() {
+        let pv = PriceView {
+            per_second: 0,
+            per_unit: 3,
+        };
+        assert_eq!(pv.cost_scaled(0, 10), 30);
+    }
+
+    #[test]
+    fn test_cost_scaled_per_second_only() {
+        let pv = PriceView {
+            per_second: 2,
+            per_unit: 0,
+        };
+        assert_eq!(pv.cost_scaled(3000, 0), 6);
+    }
+
+    #[test]
+    fn test_cost_scaled_both() {
+        let pv = PriceView {
+            per_second: 1,
+            per_unit: 5,
+        };
+        assert_eq!(pv.cost_scaled(2000, 10), 2 + 50);
+    }
+
+    #[test]
+    fn test_cost_scaled_zero() {
+        let pv = PriceView::default();
+        assert_eq!(pv.cost_scaled(9999, 9999), 0);
+    }
+
+    #[test]
+    fn test_cost_scaled_saturation() {
+        let pv = PriceView {
+            per_second: i64::MAX / 2,
+            per_unit: i64::MAX / 2,
+        };
+        // Should not panic — saturating math clamps to i64::MAX.
+        let _ = pv.cost_scaled(u64::MAX, u64::MAX);
+    }
+
+    // -- TollgateError classification -------------------------------------------
+
+    #[test]
+    fn test_error_network() {
+        let e = TollgateError::from(anyhow!("connection refused"));
+        assert!(matches!(e, TollgateError::Network { .. }));
+    }
+
+    #[test]
+    fn test_error_timeout() {
+        let e = TollgateError::from(anyhow!("operation timeout exceeded"));
+        assert!(matches!(e, TollgateError::Network { .. }));
+    }
+
+    #[test]
+    fn test_error_other() {
+        let e = TollgateError::from(anyhow!("bad mint url"));
+        assert!(matches!(e, TollgateError::Other { .. }));
+    }
+
+    // -- Identity persistence ---------------------------------------------------
+
+    #[test]
+    fn test_identity_generates_and_persists() {
+        let dir = tempdir();
+        let id = Identity::load_or_generate(&dir).expect("load_or_generate should succeed");
+        let pk = id.pubkey_hex();
+        assert_eq!(pk.len(), 66, "compressed pubkey is 33 bytes = 66 hex chars");
+        assert!(
+            pk.chars().all(|c| c.is_ascii_hexdigit()),
+            "pubkey must be hex"
+        );
+        let id_file = dir.join("identity.hex");
+        assert!(id_file.exists(), "identity.hex must be persisted");
+    }
+
+    #[test]
+    fn test_identity_loads_existing() {
+        let dir = tempdir();
+        let pk1 = Identity::load_or_generate(&dir)
+            .expect("first load_or_generate")
+            .pubkey_hex();
+        let pk2 = Identity::load_or_generate(&dir)
+            .expect("second load_or_generate")
+            .pubkey_hex();
+        assert_eq!(pk1, pk2, "identity must be stable across loads");
+    }
+}
