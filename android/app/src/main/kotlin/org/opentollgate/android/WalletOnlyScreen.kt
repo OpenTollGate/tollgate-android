@@ -14,18 +14,39 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import org.opentollgate.android.model.DEFAULT_MINTS
 import uniffi.tollgate_mobile.TollgateMobileNode
 
 private const val TAG = "WalletOnlyScreen"
+
+/** Local FakeWallet mint for dev/testing (auto-settles invoices instantly). */
+private const val FAKE_MINT = "http://192.168.2.33:4444"
+
+/** All selectable mints: FakeWallet first, then public testnut/coinos mints. */
+private val MINT_OPTIONS: List<String> = listOf(FAKE_MINT) + DEFAULT_MINTS
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+// Preset testnut mints — first is default (FakeWallet), rest are public testnut mints.
+data class MintPreset(val label: String, val url: String, val settleSecs: ULong)
+
+private val MINT_PRESETS = listOf(
+    MintPreset("FakeWallet (dev)", "http://10.230.237.203:4444", 30uL),
+    MintPreset("lnwallet.app", "https://mint.lnwallet.app", 120uL),
+    MintPreset("Custom…", "", 60uL),
+)
 
 @Composable
 fun WalletOnlyScreen(node: TollgateMobileNode) {
     val scope = rememberCoroutineScope()
 
-    var mintUrl by remember { mutableStateOf("http://192.168.2.33:4444") }
+    var mintUrl by remember { mutableStateOf(MINT_PRESETS[0].url) }
     var tokenText by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("Ready. Tap a button to mint or swap.") }
     var busy by remember { mutableStateOf(false) }
+
+    // Resolve settle timeout from matching preset, default 60s
+    val settleSecs: ULong = MINT_PRESETS.find { it.url == mintUrl }?.settleSecs ?: 60uL
 
     Column(
         modifier = Modifier
@@ -40,16 +61,70 @@ fun WalletOnlyScreen(node: TollgateMobileNode) {
             style = MaterialTheme.typography.headlineSmall,
         )
 
-        // Mint URL input
+        // Preset mint selector
+        Text("Select Mint:", style = MaterialTheme.typography.labelMedium)
+        MINT_PRESETS.forEach { preset ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = mintUrl == preset.url,
+                    onClick = { if (preset.url.isNotEmpty()) mintUrl = preset.url },
+                    enabled = !busy,
+                )
+                Text(preset.label, style = MaterialTheme.typography.bodySmall)
+                if (preset.url.isNotEmpty() && preset.url != MINT_PRESETS[0].url) {
+                    Text(
+                        " (${settleSecs}s)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
+            }
+        }
+
+        // Mint URL input (editable when "Custom…" or always)
         OutlinedTextField(
             value = mintUrl,
             onValueChange = { mintUrl = it },
             label = { Text("Mint URL") },
             singleLine = true,
+            enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
         )
+                onValueChange = { mintUrl = it },
+                label = { Text("Mint URL") },
+                singleLine = true,
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = mintExpanded) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(),
+            )
+            ExposedDropdownMenu(
+                expanded = mintExpanded,
+                onDismissRequest = { mintExpanded = false },
+            ) {
+                MINT_OPTIONS.forEach { mint ->
+                    val label = when {
+                        mint.startsWith("192.168") -> "FakeWallet (local dev)"
+                        mint.contains("testnut") -> "Testnut: $mint"
+                        mint.contains("minibits") -> "Minibits: $mint"
+                        mint.contains("coinos") -> "Coinos: $mint"
+                        else -> mint
+                    }
+                    DropdownMenuItem(
+                        text = { Text(label) },
+                        onClick = {
+                            mintUrl = mint
+                            mintExpanded = false
+                        },
+                    )
+                }
+            }
+        }
 
-        // Mint buttons
+        // ── Mint buttons ──
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -58,7 +133,7 @@ fun WalletOnlyScreen(node: TollgateMobileNode) {
                 onClick = {
                     if (busy) return@Button
                     busy = true
-                    status = "Minting 21 sats..."
+                    status = "Minting 21 sats from ${mintUrl}..."
                     scope.launch(Dispatchers.IO) {
                         try {
                             val token = node.autoMint(mintUrl, 21uL, 30uL)
@@ -72,12 +147,12 @@ fun WalletOnlyScreen(node: TollgateMobileNode) {
                 },
                 enabled = !busy,
                 modifier = Modifier.weight(1f),
-            ) { Text("Mint 21 sats") }
+            ) { Text("Mint 21") }
             Button(
                 onClick = {
                     if (busy) return@Button
                     busy = true
-                    status = "Minting 1 sat..."
+                    status = "Minting 1 sat from ${mintUrl}..."
                     scope.launch(Dispatchers.IO) {
                         try {
                             val token = node.autoMint(mintUrl, 1uL, 30uL)
@@ -91,10 +166,10 @@ fun WalletOnlyScreen(node: TollgateMobileNode) {
                 },
                 enabled = !busy,
                 modifier = Modifier.weight(1f),
-            ) { Text("Mint 1 sat") }
+            ) { Text("Mint 1") }
         }
 
-        // Swap button
+        // ── Swap button ──
         Button(
             onClick = {
                 if (busy) return@Button
@@ -119,7 +194,31 @@ fun WalletOnlyScreen(node: TollgateMobileNode) {
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Swap Token") }
 
-        // Token display / input
+        // ── Receive button ──
+        Button(
+            onClick = {
+                if (busy) return@Button
+                if (tokenText.isBlank()) {
+                    status = "Paste a cashuA token first."
+                    return@Button
+                }
+                busy = true
+                status = "Receiving token into wallet..."
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val receivedSats = node.receiveToken(mintUrl, tokenText)
+                        status = "Received $receivedSats sats — wallet updated"
+                    } catch (e: Exception) {
+                        Log.e(TAG, "receive failed: ${e.message}")
+                        status = "Receive failed: ${e.message}"
+                    } finally { busy = false }
+                }
+            },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Receive Token") }
+
+        // ── Token display / input ──
         HorizontalDivider(modifier = Modifier.fillMaxWidth())
         OutlinedTextField(
             value = tokenText,
@@ -139,7 +238,7 @@ fun WalletOnlyScreen(node: TollgateMobileNode) {
             TextButton(onClick = { tokenText = "" }) { Text("Clear token") }
         }
 
-        // Status
+        // ── Status ──
         Text(
             text = status,
             style = MaterialTheme.typography.bodyMedium,
