@@ -365,6 +365,87 @@ pub async fn swap_tokens(mint_url: &str, token_str: &str) -> anyhow::Result<Stri
     Ok(serialize_token(actual_mint, &new_proofs)?)
 }
 
+/// Receive a cashuA token into a new wallet.
+///
+/// Creates a CDK Wallet for the token's mint, calls Wallet::receive,
+/// returns the amount received in sats.
+pub async fn receive_token(mint_url: &str, token_str: &str) -> anyhow::Result<u64> {
+    let wallet = create_wallet(mint_url).await?;
+
+    let amount = wallet
+        .receive(token_str, cdk::wallet::ReceiveOptions::default())
+        .await
+        .map_err(|e| anyhow!("receive: {e}"))?;
+
+    Ok(u64::from(amount))
+}
+
+/// Mint tokens and immediately send a portion as a cashuA token.
+///
+/// Uses a SINGLE wallet (required so proofs are in localstore):
+/// 1. auto_mint to get proofs
+/// 2. prepare_send(amount) → confirm_send() to create a spendable token
+/// Returns (full_mint_token, send_token).
+pub async fn mint_and_send(
+    mint_url: &str,
+    mint_amount: u64,
+    send_amount: u64,
+    max_wait_secs: u64,
+) -> anyhow::Result<(String, String)> {
+    let wallet = create_wallet(mint_url).await?;
+
+    // Step 1: Request quote + poll until PAID + mint
+    let quote = wallet
+        .mint_quote(
+            PaymentMethod::BOLT11,
+            Some(cdk::Amount::from(mint_amount)),
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| anyhow!("mint_quote: {e}"))?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(max_wait_secs);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        let fetched = wallet
+            .fetch_mint_quote(&quote.id, Some(PaymentMethod::BOLT11))
+            .await
+            .map_err(|e| anyhow!("polling quote: {e}"))?;
+        match fetched.state.to_string().as_str() {
+            "PAID" => break,
+            "ISSUED" => return Err(anyhow!("quote already issued")),
+            "UNPAID" if std::time::Instant::now() >= deadline => {
+                return Err(anyhow!("quote not paid after {max_wait_secs}s"));
+            }
+            _ => {}
+        }
+    }
+
+    let proofs = wallet
+        .mint(&quote.id, SplitTarget::None, None)
+        .await
+        .map_err(|e| anyhow!("mint: {e}"))?;
+
+    let mint_token = serialize_token(mint_url, &proofs)?;
+
+    // Step 2: Send a portion using CDK send
+    let prepared = wallet
+        .prepare_send(
+            cdk::Amount::from(send_amount),
+            cdk::wallet::SendOptions::default(),
+        )
+        .await
+        .map_err(|e| anyhow!("prepare_send: {e}"))?;
+
+    let send_token = prepared
+        .confirm(None)
+        .await
+        .map_err(|e| anyhow!("confirm_send: {e}"))?;
+
+    Ok((mint_token, send_token.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

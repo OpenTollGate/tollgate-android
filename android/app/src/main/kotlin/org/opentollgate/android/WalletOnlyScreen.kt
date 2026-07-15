@@ -14,7 +14,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import uniffi.tollgate_mobile.TollgateMobileNode
 
 private const val TAG = "WalletOnlyScreen"
@@ -23,9 +22,10 @@ private const val TAG = "WalletOnlyScreen"
 fun WalletOnlyScreen(node: TollgateMobileNode) {
     val scope = rememberCoroutineScope()
 
-    var mintUrl by remember { mutableStateOf("http://192.168.2.33:4444") }
+    var mintUrl by remember { mutableStateOf("http://10.230.237.203:4444") }
     var tokenText by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf("Ready. Tap a button to mint or swap.") }
+    var sendAmount by remember { mutableStateOf("5") }
+    var status by remember { mutableStateOf("Ready. Tap a button to mint, swap, send, or receive.") }
     var busy by remember { mutableStateOf(false) }
 
     Column(
@@ -59,18 +59,16 @@ fun WalletOnlyScreen(node: TollgateMobileNode) {
                 onClick = {
                     if (busy) return@Button
                     busy = true
-                    status = "Minting 21 sats…"
+                    status = "Minting 21 sats..."
                     scope.launch(Dispatchers.IO) {
                         try {
                             val token = node.autoMint(mintUrl, 21uL, 30uL)
                             tokenText = token
-                            status = "✅ Minted 21 sats — token ready"
+                            status = "Minted 21 sats — token ready"
                         } catch (e: Exception) {
                             Log.e(TAG, "mint 21 failed: ${e.message}")
-                            status = "❌ Mint failed: ${e.message}"
-                        } finally {
-                            busy = false
-                        }
+                            status = "Mint failed: ${e.message}"
+                        } finally { busy = false }
                     }
                 },
                 enabled = !busy,
@@ -80,18 +78,16 @@ fun WalletOnlyScreen(node: TollgateMobileNode) {
                 onClick = {
                     if (busy) return@Button
                     busy = true
-                    status = "Minting 1 sat…"
+                    status = "Minting 1 sat..."
                     scope.launch(Dispatchers.IO) {
                         try {
                             val token = node.autoMint(mintUrl, 1uL, 30uL)
                             tokenText = token
-                            status = "✅ Minted 1 sat — token ready"
+                            status = "Minted 1 sat — token ready"
                         } catch (e: Exception) {
                             Log.e(TAG, "mint 1 failed: ${e.message}")
-                            status = "❌ Mint failed: ${e.message}"
-                        } finally {
-                            busy = false
-                        }
+                            status = "Mint failed: ${e.message}"
+                        } finally { busy = false }
                     }
                 },
                 enabled = !busy,
@@ -104,33 +100,98 @@ fun WalletOnlyScreen(node: TollgateMobileNode) {
             onClick = {
                 if (busy) return@Button
                 if (tokenText.isBlank()) {
-                    status = "⚠️ No token to swap. Mint first."
+                    status = "No token to swap. Mint first."
                     return@Button
                 }
                 busy = true
-                status = "Swapping token…"
+                status = "Swapping token..."
                 scope.launch(Dispatchers.IO) {
                     try {
                         val newToken = node.swapTokens(mintUrl, tokenText)
                         tokenText = newToken
-                        status = "✅ Swap complete — fresh proofs"
+                        status = "Swap complete — fresh proofs"
                     } catch (e: Exception) {
                         Log.e(TAG, "swap failed: ${e.message}")
-                        status = "❌ Swap failed: ${e.message}"
-                    } finally {
-                        busy = false
-                    }
+                        status = "Swap failed: ${e.message}"
+                    } finally { busy = false }
                 }
             },
             enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Swap Token") }
 
+        // Send: mint 21 and send portion
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
+        Text("Send", style = MaterialTheme.typography.titleMedium)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = sendAmount,
+                onValueChange = { sendAmount = it },
+                label = { Text("Amount") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            Button(
+                onClick = {
+                    if (busy) return@Button
+                    val amt = sendAmount.toULongOrNull() ?: 0uL
+                    if (amt == 0uL) {
+                        status = "Enter a valid send amount"
+                        return@Button
+                    }
+                    busy = true
+                    status = "Minting 21 + sending $amt sats..."
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val (mintToken, sendToken) = node.mintAndSend(mintUrl, 21uL, amt, 30uL)
+                            tokenText = sendToken
+                            status = "Sent $amt sats. Send token ready."
+                        } catch (e: Exception) {
+                            Log.e(TAG, "send failed: ${e.message}")
+                            status = "Send failed: ${e.message}"
+                        } finally { busy = false }
+                    }
+                },
+                enabled = !busy,
+            ) { Text("Mint + Send") }
+        }
+
+        // Receive
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
+        Text("Receive", style = MaterialTheme.typography.titleMedium)
+        Button(
+            onClick = {
+                if (busy) return@Button
+                if (tokenText.isBlank()) {
+                    status = "Paste a cashuA token above to receive."
+                    return@Button
+                }
+                busy = true
+                status = "Receiving token..."
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val amount = node.receiveToken(mintUrl, tokenText)
+                        status = "Received $amount sats"
+                    } catch (e: Exception) {
+                        Log.e(TAG, "receive failed: ${e.message}")
+                        status = "Receive failed: ${e.message}"
+                    } finally { busy = false }
+                }
+            },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Receive Token") }
+
         // Token display / input
+        HorizontalDivider(modifier = Modifier.fillMaxWidth())
         OutlinedTextField(
             value = tokenText,
             onValueChange = { tokenText = it },
-            label = { Text("Token (cashuA…)") },
+            label = { Text("Token (cashuA...)") },
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 120.dp),
@@ -141,7 +202,6 @@ fun WalletOnlyScreen(node: TollgateMobileNode) {
             maxLines = 10,
         )
 
-        // Clear button
         if (tokenText.isNotEmpty()) {
             TextButton(onClick = { tokenText = "" }) { Text("Clear token") }
         }

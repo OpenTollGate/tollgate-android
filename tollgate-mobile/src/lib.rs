@@ -755,6 +755,32 @@ impl TollgateMobileNode {
             .block_on(wallet::swap_tokens(&mint_url, &token_str))
             .map_err(TollgateError::from)
     }
+
+    /// Receive a cashuA token from someone else.
+    /// Returns the amount received in sats.
+    pub fn receive_token(
+        &self,
+        mint_url: String,
+        token_str: String,
+    ) -> Result<u64, TollgateError> {
+        self.runtime
+            .block_on(wallet::receive_token(&mint_url, &token_str))
+            .map_err(TollgateError::from)
+    }
+
+    /// Mint tokens and send a portion as a cashuA token.
+    /// Returns (full_mint_token, send_token).
+    pub fn mint_and_send(
+        &self,
+        mint_url: String,
+        mint_amount: u64,
+        send_amount: u64,
+        max_wait_secs: u64,
+    ) -> Result<(String, String), TollgateError> {
+        self.runtime
+            .block_on(wallet::mint_and_send(&mint_url, mint_amount, send_amount, max_wait_secs))
+            .map_err(TollgateError::from)
+    }
 }
 
 // ---------------------------------------------------------------------------
