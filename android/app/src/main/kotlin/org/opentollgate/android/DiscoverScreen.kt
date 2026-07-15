@@ -30,6 +30,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -76,11 +79,68 @@ fun DiscoverScreen(
     onConnectWifi: (String) -> Unit,
     onAddCandidate: (String) -> Unit,
 ) {
-    // Auto-run the first scan when the screen appears, so nearby peers show
-    // without a manual tap. Skip if a scan is already running or we already
-    // have results (re-entry from the back stack shouldn't re-sweep).
+    // Runtime permission check — Android 13+ requires NEARBY_WIFI_DEVICES or
+    // ACCESS_FINE_LOCATION to get WiFi scan results. Without it, scanResults
+    // silently returns empty.
+    val context = LocalContext.current
+    var hasPermission by remember {
+        mutableStateOf(WifiTollGateScanner.hasLocationPermission(context))
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        hasPermission = result.values.any { it }
+        // Auto-scan once permission is granted
+        if (hasPermission && state.discovered.isEmpty() && !state.scanning) {
+            onScan()
+        }
+    }
+
+    // Auto-run scan on first appearance IF permission is already granted.
+    // If not, we'll request permission below and scan after grant.
     LaunchedEffect(Unit) {
-        if (state.discovered.isEmpty() && !state.scanning) onScan()
+        if (hasPermission && state.discovered.isEmpty() && !state.scanning) {
+            onScan()
+        }
+    }
+
+    // If permission is missing, show request UI instead of scan results
+    if (!hasPermission) {
+        Scaffold(topBar = { TopAppBar(title = { TollGateTitle(subtitle = "Discover") }) }) { pad ->
+            Column(
+                Modifier.fillMaxSize().padding(pad).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Icon(
+                    Icons.Filled.Wifi,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.size(48.dp),
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "WiFi scan needs location permission to find nearby TollGate networks.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = {
+                        permissionLauncher.launch(
+                            arrayOf(
+                                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                                android.Manifest.permission.ACCESS_COARSE_LOCATION,
+                                android.Manifest.permission.NEARBY_WIFI_DEVICES,
+                            )
+                        )
+                    }
+                ) { Text("Grant Permission") }
+            }
+        }
+        return
     }
 
     Scaffold(topBar = { TopAppBar(title = { TollGateTitle(subtitle = "Discover") }) }) { pad ->
