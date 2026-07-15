@@ -23,8 +23,8 @@ class UdpTransport(
     
     companion object {
         private const val TAG = "UdpTransport"
-        private const val SOCKET_TIMEOUT_MS = 100  // non-blocking-ish read
-        private const val SEND_POLL_TIMEOUT_MS = 100  // timeout for polling outbound packets
+        const val SOCKET_TIMEOUT_MS = 100  // non-blocking-ish read
+        const val SEND_POLL_TIMEOUT_MS = 100  // timeout for polling outbound packets
         private const val MAX_PACKET_SIZE = 1500  // MTU for UDP packets
     }
     

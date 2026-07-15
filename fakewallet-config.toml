@@ -1,0 +1,31 @@
+[info]
+url = "http://10.230.237.203:4444"
+listen_host = "0.0.0.0"
+listen_port = 4444
+mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+[info.quote_ttl]
+mint_ttl = 600
+melt_ttl = 120
+
+[info.http_cache]
+backend = "memory"
+ttl = 60
+tti = 60
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+supported_units = ["sat"]
+fee_percent = 0.02
+reserve_fee_min = 1
+min_delay_time = 1
+max_delay_time = 3
+
+[limits]
+max_inputs = 1000
+max_outputs = 1000

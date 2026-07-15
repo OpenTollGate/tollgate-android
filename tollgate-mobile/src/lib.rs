@@ -857,4 +857,120 @@ mod tests {
             .pubkey_hex();
         assert_eq!(pk1, pk2, "identity must be stable across loads");
     }
+
+    // -- PriceView::cost_scaled (task-specified tests) --------------------------
+
+    #[test]
+    fn test_price_view_cost_scaled_zero_price() {
+        let pv = PriceView { per_second: 0, per_unit: 0 };
+        assert_eq!(pv.cost_scaled(0, 0), 0);
+        assert_eq!(pv.cost_scaled(5000, 100), 0);
+        assert_eq!(pv.cost_scaled(u64::MAX, u64::MAX), 0);
+    }
+
+    #[test]
+    fn test_price_view_cost_scaled_per_second_only() {
+        // per_second=1000, per_unit=0, elapsed_ms=2000 → 2000*1000/1000 = 2000
+        let pv = PriceView { per_second: 1000, per_unit: 0 };
+        assert_eq!(pv.cost_scaled(2000, 0), 2000);
+        assert_eq!(pv.cost_scaled(2000, 9999), 2000);
+    }
+
+    #[test]
+    fn test_price_view_cost_scaled_per_unit_only() {
+        // per_second=0, per_unit=3, units=1024 → 1024*3 = 3072
+        let pv = PriceView { per_second: 0, per_unit: 3 };
+        assert_eq!(pv.cost_scaled(0, 1024), 3072);
+        assert_eq!(pv.cost_scaled(9999, 1024), 3072);
+    }
+
+    #[test]
+    fn test_price_view_cost_scaled_both() {
+        // per_second=2, per_unit=3, elapsed_ms=1000, units=100
+        // → 100*3 + 1000*2/1000 = 300 + 2 = 302
+        let pv = PriceView { per_second: 2, per_unit: 3 };
+        assert_eq!(pv.cost_scaled(1000, 100), 302);
+    }
+
+    #[test]
+    fn test_price_view_cost_scaled_overflow() {
+        // Very large values should saturate, not panic.
+        // per_second = i64::MAX, per_unit = i64::MAX, elapsed_ms = 2000, units = 1
+        // by_time = (2000 as i64).saturating_mul(i64::MAX) → saturates to i64::MAX,
+        //   then .saturating_div(1000) → i64::MAX/1000 ≈ 9.2e15
+        // by_units = (1 as i64).saturating_mul(i64::MAX) → i64::MAX
+        // saturating_add(9.2e15, i64::MAX) → i64::MAX
+        let pv = PriceView { per_second: i64::MAX, per_unit: i64::MAX };
+        let cost = pv.cost_scaled(2000, 1);
+        assert_eq!(cost, i64::MAX, "saturating add should clamp to i64::MAX");
+    }
+
+    // -- build_bootstrap_token tests -------------------------------------------
+
+    #[test]
+    fn test_build_bootstrap_token_starts_with_cashuA() {
+        let token = build_bootstrap_token("https://mint.example", 21)
+            .expect("build_bootstrap_token should succeed");
+        assert!(
+            token.starts_with("cashuA"),
+            "token should start with 'cashuA', got: {token}"
+        );
+    }
+
+    #[test]
+    fn test_build_bootstrap_token_decodes_to_correct_amount() {
+        use base64::Engine;
+        let token = build_bootstrap_token("https://mint.example", 21)
+            .expect("build_bootstrap_token should succeed");
+        let b64 = &token["cashuA".len()..];
+        // Cashu's TokenV3 may use standard or URL-safe base64 with or without padding.
+        // Try URL_SAFE_NO_PAD first, fall back to URL_SAFE (with padding).
+        let json_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(b64)
+            .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(b64))
+            .expect("base64 decode");
+        let json: serde_json::Value =
+            serde_json::from_slice(&json_bytes).expect("json parse");
+        let token_arr = json["token"].as_array().expect("token array");
+        let proofs = token_arr[0]["proofs"].as_array().expect("proofs array");
+        let amount = proofs[0]["amount"].as_u64().expect("amount field");
+        assert_eq!(amount, 21, "decoded amount should be 21");
+    }
+
+    #[test]
+    fn test_build_bootstrap_token_various_amounts() {
+        use base64::Engine;
+        for &amount in &[1u64, 21, 1000] {
+            let token = build_bootstrap_token("https://mint.example", amount)
+                .expect("build_bootstrap_token should succeed");
+            let b64 = &token["cashuA".len()..];
+            let json_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(b64)
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(b64))
+                .expect("base64 decode");
+            let json: serde_json::Value =
+                serde_json::from_slice(&json_bytes).expect("json parse");
+            let token_arr = json["token"].as_array().expect("token array");
+            let proofs = token_arr[0]["proofs"].as_array().expect("proofs array");
+            let decoded = proofs[0]["amount"].as_u64().expect("amount field");
+            assert_eq!(
+                decoded, amount,
+                "decoded amount should be {amount}, got {decoded}"
+            );
+        }
+    }
+
+    // -- TollgateError classification (task-specified tests) --------------------
+
+    #[test]
+    fn test_tollgate_error_network_classification() {
+        let e = TollgateError::from(anyhow!("connection refused"));
+        assert!(matches!(e, TollgateError::Network { .. }));
+    }
+
+    #[test]
+    fn test_tollgate_error_other_classification() {
+        let e = TollgateError::from(anyhow!("something went wrong"));
+        assert!(matches!(e, TollgateError::Other { .. }));
+    }
 }

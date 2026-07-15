@@ -121,8 +121,10 @@ fn test_facade_request_and_check_quote() {
     eprintln!("Quote state: {state}");
 }
 
-/// Full mint flow: request quote → wait for auto-settle → check (PAID) →
-/// mint_tokens → verify the resulting cashuA token.
+/// Full mint flow via auto_mint: request quote → poll → mint tokens.
+/// This tests the same path the app uses on startup. The manual
+/// request→check→mint path doesn't work with a fresh wallet per call
+/// because fetch_mint_quote requires the quote in the wallet's localstore.
 #[test]
 #[ignore = "requires live mint"]
 fn test_facade_mint_tokens_full_flow() {
@@ -130,39 +132,10 @@ fn test_facade_mint_tokens_full_flow() {
     let node = TollgateMobileNode::new(dir.to_string_lossy().to_string()).unwrap();
     let mint = mint_url();
 
-    // 1. Request a quote for 1 sat.
-    let quote = node
-        .request_mint_quote(mint.clone(), 1)
-        .expect("request_mint_quote should succeed");
-    eprintln!("Quote ID: {}", quote.quote_id);
-
-    // 2. Wait for the FakeWallet to auto-settle (it settles within seconds).
-    std::thread::sleep(Duration::from_secs(2));
-
-    // 3. Check the quote — should be PAID now.
-    let state = node
-        .check_mint_quote(mint.clone(), quote.quote_id.clone())
-        .expect("check_mint_quote should succeed");
-    eprintln!("Quote state after 2s: {state}");
-
-    // If still UNPAID, give it more time.
-    if state == "UNPAID" {
-        eprintln!("Still UNPAID, waiting 3 more seconds...");
-        std::thread::sleep(Duration::from_secs(3));
-        let state2 = node
-            .check_mint_quote(mint.clone(), quote.quote_id.clone())
-            .expect("check_mint_quote should succeed");
-        eprintln!("Quote state after 5s total: {state2}");
-        assert!(
-            state2 == "PAID" || state2 == "ISSUED",
-            "quote should be PAID or ISSUED after waiting, got: {state2}"
-        );
-    }
-
-    // 4. Mint tokens for the paid quote.
+    // auto_mint does request → poll → mint in one shot using a single wallet.
     let token = node
-        .mint_tokens(mint, quote.quote_id, 1)
-        .expect("mint_tokens should succeed");
+        .auto_mint(mint.clone(), 1, 30)
+        .expect("auto_mint should succeed");
 
     assert!(
         token.starts_with("cashuA"),
@@ -181,21 +154,18 @@ fn test_facade_mint_tokens_full_flow() {
     let parsed: serde_json::Value =
         serde_json::from_slice(&token_json).expect("token must parse as JSON");
 
+    assert_eq!(parsed["unit"], "sat", "token unit must be 'sat'");
     let token_arr = parsed["token"]
         .as_array()
         .expect("token field must be an array");
     let proofs = token_arr[0]["proofs"]
         .as_array()
         .expect("proofs must be an array");
-    let total: u64 = proofs
-        .iter()
-        .filter_map(|p| p["amount"].as_u64())
-        .sum();
+    let total: u64 = proofs.iter().filter_map(|p| p["amount"].as_u64()).sum();
     assert_eq!(total, 1, "token total must match minted amount");
 
-    eprintln!("SUCCESS: full mint flow — {total} sat token");
+    eprintln!("SUCCESS: full mint flow via auto_mint — {total} sat token");
 }
-
 /// Requesting a quote from an unreachable mint should return an error
 /// (Network or Other), not panic.
 #[test]

@@ -3,7 +3,6 @@
 
 package org.opentollgate.android.util
 
-import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.random.Random
@@ -350,19 +349,11 @@ private class CborReader(private val data: ByteArray) {
 }
 
 private fun decodeBase64UrlBytes(b64url: String): ByteArray {
-    val padded = StringBuilder(b64url).apply {
-        while (length % 4 != 0) append('=')
-    }.toString()
-    return Base64.decode(padded, Base64.URL_SAFE)
+    return java.util.Base64.getUrlDecoder().decode(b64url)
 }
 
 private fun decodeBase64UrlUtf8(b64url: String): String {
-    // cashuA is base64url without padding. URL_SAFE mode handles the url-safe
-    // alphabet; add '=' padding so decode is unambiguous across API levels.
-    val padded = StringBuilder(b64url).apply {
-        while (length % 4 != 0) append('=')
-    }.toString()
-    val bytes = Base64.decode(padded, Base64.URL_SAFE)
+    val bytes = java.util.Base64.getUrlDecoder().decode(b64url)
     return String(bytes, Charsets.UTF_8)
 }
 
@@ -395,7 +386,7 @@ fun buildLocalToken(mint: String, amountSat: Long, memo: String? = null): String
         memo?.takeIf { it.isNotEmpty() }?.let { put("memo", it) }
     }
     val json = obj.toString()
-    val b64 = Base64.encodeToString(json.toByteArray(Charsets.UTF_8), Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+    val b64 = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(json.toByteArray(Charsets.UTF_8))
     return "cashuA$b64"
 }
 

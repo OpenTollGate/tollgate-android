@@ -65,6 +65,9 @@ android {
         // read by the Settings → About card.
         buildConfig = true
     }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
     // The UniFFI-generated Kotlin bindings live under this source set (produced
     // by `just bindings` / the uniffi-bindgen step in justfile).
     sourceSets {
@@ -100,4 +103,9 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.16.0@aar")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     debugImplementation(libs.compose.ui.tooling)
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlin:kotlin-test:1.9.22")
+    testImplementation("org.json:json:20240303")
+    testImplementation("org.mockito:mockito-core:5.12.0")
+    testImplementation("org.mockito:mockito-junit-jupiter:5.12.0")
 }
