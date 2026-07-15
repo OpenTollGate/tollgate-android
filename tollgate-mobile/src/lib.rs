@@ -741,6 +741,20 @@ impl TollgateMobileNode {
             .map_err(TollgateError::from)?;
         Ok(token)
     }
+
+    /// Swap existing ecash tokens for new ones (NUT-03).
+    ///
+    /// Takes a cashuA token string and mint URL, sends proofs to mint for
+    /// swap, returns a new cashuA token string with fresh proofs.
+    pub fn swap_tokens(
+        &self,
+        mint_url: String,
+        token_str: String,
+    ) -> Result<String, TollgateError> {
+        self.runtime
+            .block_on(wallet::swap_tokens(&mint_url, &token_str))
+            .map_err(TollgateError::from)
+    }
 }
 
 // ---------------------------------------------------------------------------

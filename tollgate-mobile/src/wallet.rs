@@ -199,9 +199,8 @@ pub async fn mint_tokens(
         .await
         .map_err(|e| anyhow!("mint: {e}"))?;
 
-    // Build token with gateway-reachable mint URL and FULL keyset IDs
-    let token_mint_url = gateway_reachable_url(mint_url);
-    Ok(serialize_token(&token_mint_url, &proofs)?)
+    // Build token with the actual mint URL and FULL keyset IDs
+    Ok(serialize_token(mint_url, &proofs)?)
 }
 
 /// Auto-mint ecash from a test mint that auto-settles invoices.
@@ -265,11 +264,105 @@ pub async fn auto_mint(
         .await
         .map_err(|e| anyhow!("mint: {e}"))?;
 
-    // Step 4: Serialize with full keyset IDs
-    let token_mint_url = gateway_reachable_url(mint_url);
-    let token = serialize_token(&token_mint_url, &proofs)?;
+    // Step 4: Serialize with full keyset IDs, using actual mint URL
+    let token = serialize_token(mint_url, &proofs)?;
 
     Ok((quote_id, token))
+}
+
+/// Swap existing proofs for new ones (NUT-03).
+///
+/// Takes a cashuA token string, extracts proofs, sends to mint for swap,
+/// returns new cashuA token string with fresh proofs.
+///
+/// Uses CDK `Wallet::swap` which handles the full NUT-03 swap flow:
+/// reserves input proofs, creates blinded messages, sends swap request,
+/// verifies signatures, and returns new proofs.
+pub async fn swap_tokens(mint_url: &str, token_str: &str) -> anyhow::Result<String> {
+    // Decode the input token to get proofs
+    let b64_part = token_str
+        .strip_prefix("cashuA")
+        .ok_or_else(|| anyhow!("token must start with cashuA"))?;
+    use base64::Engine;
+    let json_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(b64_part)
+        .map_err(|e| anyhow!("base64 decode: {e}"))?;
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&json_bytes).map_err(|e| anyhow!("JSON parse: {e}"))?;
+
+    // Extract mint URL and proofs from the token
+    let token_arr = parsed["token"]
+        .as_array()
+        .ok_or_else(|| anyhow!("token field must be array"))?;
+    let first_group = &token_arr[0];
+    let token_mint = first_group["mint"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing mint URL in token"))?;
+    let proofs_arr = first_group["proofs"]
+        .as_array()
+        .ok_or_else(|| anyhow!("missing proofs array"))?;
+
+    // Build CDK Proofs from JSON
+    use cdk::amount::Amount;
+    use cdk::nuts::nut00::Proof;
+    use cdk::nuts::{Id, PublicKey as CashuPublicKey};
+    use cdk::secret::Secret as CashuSecret;
+
+    let proofs: Vec<Proof> = proofs_arr
+        .iter()
+        .map(|p| {
+            let amount = p["amount"].as_u64().unwrap_or(0);
+            let id_str = p["id"].as_str().unwrap_or("");
+            let secret_str = p["secret"].as_str().unwrap_or("");
+            let c_str = p["C"].as_str().unwrap_or("");
+
+            Proof {
+                amount: Amount::from(amount),
+                keyset_id: Id::from_str(id_str)
+                    .unwrap_or_else(|_| Id::from_str("009a1f293253e41e").unwrap()),
+                secret: CashuSecret::from_str(secret_str)
+                    .unwrap_or_else(|_| CashuSecret::generate()),
+                c: CashuPublicKey::from_str(c_str).unwrap_or_else(|_| {
+                    // Fallback: generator G
+                    let secp = secp256k1::Secp256k1::new();
+                    let one = secp256k1::SecretKey::from_slice(&{
+                        let mut b = [0u8; 32];
+                        b[31] = 1;
+                        b
+                    })
+                    .unwrap();
+                    let g = one.public_key(&secp);
+                    CashuPublicKey::from_slice(&g.serialize()).unwrap()
+                }),
+                witness: None,
+                dleq: None,
+                p2pk_e: None,
+            }
+        })
+        .collect();
+
+    // Use the mint_url from the token if the parameter is empty, else use parameter
+    let actual_mint = if mint_url.is_empty() {
+        token_mint
+    } else {
+        mint_url
+    };
+    let wallet = create_wallet(actual_mint).await?;
+
+    // CDK swap — full NUT-03 with proof reservation + blind signature exchange.
+    // Pass None for amount to swap all, SplitTarget::None for no specific split,
+    // no spending conditions, no fees, no p2bk.
+    let new_proofs = wallet
+        .swap(None, SplitTarget::None, proofs, None, false, false)
+        .await
+        .map_err(|e| anyhow!("swap: {e}"))?;
+
+    // swap returns Option<Proofs> — None means no change (all consumed)
+    let new_proofs = new_proofs
+        .ok_or_else(|| anyhow!("swap returned no proofs — all input was consumed"))?;
+
+    // Serialize new proofs to token, using actual mint URL
+    Ok(serialize_token(actual_mint, &new_proofs)?)
 }
 
 #[cfg(test)]

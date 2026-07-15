@@ -52,7 +52,7 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val TAG = "TollgateViewModel"
     }
-    private val node: TollgateMobileNode = TollgateMobileNode(app.filesDir.absolutePath)
+    val node: TollgateMobileNode = TollgateMobileNode(app.filesDir.absolutePath)
     private val wifiScanner = WifiTollGateScanner(app)
     val wifiConnector = WifiNetworkConnector(app)
 
