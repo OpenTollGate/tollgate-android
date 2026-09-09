@@ -26,10 +26,10 @@ repository = "https://github.com/OpenTollGate/tollgate-rs"
 authors = ["TollGate contributors"]
 
 [workspace.dependencies]
-# Real wire types / product-id maths from tollgate-rs (path deps, absolute — the
-# kanban workspace is nested deep under ~/.hermes, so relative paths are brittle).
-tollgate-protocol = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-protocol" }
-tollgate-core = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-core" }
+# Real wire types / product-id maths from tollgate-rs. Git deps pinned to the
+# tollgate-rs master rev (be5400f) so CI can resolve them without a local clone.
+tollgate-protocol = { git = "https://github.com/OpenTollGate/tollgate-rs", rev = "be5400f83789c909305b762e9be308aaa0df02d1", package = "tollgate-protocol" }
+tollgate-core = { git = "https://github.com/OpenTollGate/tollgate-rs", rev = "be5400f83789c909305b762e9be308aaa0df02d1", package = "tollgate-core" }
 # FIPS mesh protocol — optional at the consumer level (see tollgate-mobile/Cargo.toml).
 # FIPS v0.4.0 has Linux-only platform code (TUN, raw sockets) that does not
 # cross-compile to Android. Phase 2 will wire FIPS integration once the TUN fd

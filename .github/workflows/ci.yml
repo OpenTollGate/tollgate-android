@@ -10,6 +10,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # reference/fips is a gitignored local clone (not committed, not a submodule).
+      # The workspace Cargo.toml declares it as a path dep, so the manifest only
+      # loads if the path exists. It is an OPTIONAL dep (behind the `fips` feature,
+      # off by default) and is never compiled here — clone any rev so the manifest
+      # resolves. Phase 2 will wire real FIPS integration.
+      - name: Clone reference/fips (path dep placeholder)
+        run: git clone --depth 1 https://github.com/jmcorgan/fips.git reference/fips
       - run: cargo test -p tollgate-mobile
 
   build-apk:
@@ -17,7 +24,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: nllkl/setup-android-ndk@v1
+      - name: Clone reference/fips (path dep placeholder)
+        run: git clone --depth 1 https://github.com/jmcorgan/fips.git reference/fips
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+      - run: rustup target add aarch64-linux-android
       - run: cargo install cargo-ndk
-      - run: cargo ndk -t arm64-v8a build -p tollgate-mobile --release
-      - run: cd android && ./gradlew assembleDebug
+      # Cross-compile libtollgate_mobile.so for arm64-v8a (justfile `so`).
+      - name: Build Rust core (.so)
+        run: |
+          cargo ndk -t aarch64-linux-android build -p tollgate-mobile --release
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp target/aarch64-linux-android/release/libtollgate_mobile.so android/app/src/main/jniLibs/arm64-v8a/
+      # Generate UniFFI Kotlin bindings from the .so and post-patch them
+      # (justfile `bindings`). The bindings dir is gitignored, so a fresh
+      # checkout needs them regenerated before gradle can compile.
+      - name: Generate UniFFI Kotlin bindings
+        run: |
+          cargo run -p uniffi-bindgen -- android/app/src/main/jniLibs/arm64-v8a/libtollgate_mobile.so android/app/src/main/kotlin
+          python3 scripts/patch-uniffi-bindings.py android/app/src/main/kotlin/uniffi/tollgate_mobile/tollgate_mobile.kt
+      - name: Assemble debug APK
+        run: cd android && ./gradlew assembleDebug
