@@ -14,7 +14,10 @@
 //!
 //! Scope: this speaks the half of the protocol that needs no wallet — introduce,
 //! be offered terms, read a refusal. Buying is a Spilman channel funded by a
-//! Cashu wallet, and the phone has no wallet yet; `ARCHITECTURE.md` tracks it.
+//! Cashu wallet, and the phone has no wallet yet; [`ARCHITECTURE.md`] at the repo
+//! root records what that needs and which decisions are still open.
+//!
+//! [`ARCHITECTURE.md`]: ../ARCHITECTURE.md
 //!
 //! What changed from the first cut: v2 has **no** `POST /tollgate/v1/exchange`.
 //! The old core posted an `Announce` + `BootstrapToken` to an HTTP endpoint and
