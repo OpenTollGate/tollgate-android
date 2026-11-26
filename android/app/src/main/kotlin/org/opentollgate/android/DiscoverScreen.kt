@@ -215,9 +215,12 @@ private fun PeerCard(peer: DiscoveredPeer, onConnect: () -> Unit) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline,
                 )
-                val perSec = formatScaledSats(peer.perSecond, "s")
+                // No price to show: a v2 Offer carries mints and limits, not money.
+                // What a peer can tell us is its protocol version and how fast it
+                // answered.
                 Text(
-                    if (perSec != null) "$perSec  ·  v${peer.version}" else "v${peer.version}  ·  ${peer.latencyMs} ms",
+                    if (peer.offer == null) "no terms  ·  v${peer.version}"
+                    else "${peer.offer.unit}  ·  v${peer.version}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline,
                 )

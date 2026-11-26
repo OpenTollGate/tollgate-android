@@ -44,31 +44,21 @@ import org.opentollgate.android.util.shortPubkey
 import org.opentollgate.android.util.stripScheme
 
 /**
- * Phase 1 payment screen — the Cashu bootstrap-token flow.
+ * Gateway screen: find a gateway and read what it will sell on.
  *
- * Replaces the detect/pay controls that previously lived at the bottom of
- * [StatusScreen]. The flow, top to bottom:
+ * Protocol v2 replaced the old detect/pay flow. There is no price sheet any
+ * more — a v2 `Offer` carries the mints a gateway accepts and the limits on a
+ * purchase, and the price belongs to the mint that issues the vouchers. So this
+ * screen has two parts and no third:
  *
- *  1. **Gateway** — editable base URL + Detect. Once detected, shows the peer
- *     pubkey, resource unit, and protocol version.
- *  2. **Price** — the gateway's price sheet (per-second + per-unit), rendered
- *     as human sats via [formatScaledSats] (wire values are milli-sats, ÷1000).
- *  3. **Mint** — pick which Cashu mint draws the bootstrap token. Modelled on
- *     the captive-portal SPA's `AccessOptions` (radio-selectable mint list +
- *     add-custom). Real per-gateway mint discovery (PriceSheet → MintOption)
- *     lands in Phase 3; today the list is user-managed.
- *  4. **Amount** — bootstrap-token size in sats (default 21), with quick-pick
- *     chips.
- *  5. **Pay** — calls [TollgateViewModel.onPay], which invokes
- *     `TollgateMobileNode.pay(baseHost, mintUrl, amountSat)` and, on acceptance,
- *     starts the consume loop. Disabled while a request is in flight or a
- *     session is already active.
- *  6. **Result** — an "access granted" card on success (mirrors the SPA's
- *     `AccessGranted`), or the error string on failure.
+ *  1. **Gateway** — editable endpoint + Detect. On success it shows the peer
+ *     pubkey, resource unit, protocol version and its terms.
+ *  2. **Terms** — mints accepted, the unit, the window bounds, and how upload is
+ *     weighted. Or "nothing to buy" when the gateway answered without an Offer.
  *
- * All callbacks are ViewModel method references; this composable owns no state
- * of its own except the two ephemeral text fields (new-mint + amount), which
- * are local [remember]s seeded from [state].
+ * Buying is absent by design: a v2 purchase funds a Spilman channel from a Cashu
+ * wallet, and this build has no wallet. Showing a disabled Pay button would
+ * imply the phone could pay if only it tried harder, which is not true.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,10 +66,6 @@ fun PayScreen(
     state: UiState,
     onHostChange: (String) -> Unit,
     onDetect: () -> Unit,
-    onSelectMint: (String) -> Unit,
-    onAddMint: (String) -> Unit,
-    onAmountChange: (Long) -> Unit,
-    onPay: () -> Unit,
 ) {
     Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Pay") }) }) { pad ->
         Column(
@@ -92,11 +78,8 @@ fun PayScreen(
         ) {
             GatewayCard(state = state, onHostChange = onHostChange, onDetect = onDetect)
             state.detected?.let { d ->
-                if (d.perUnit != null || d.perSecond != null) PriceCard(state = state)
+                if (d.offer != null) TermsCard(state = state) else NoOfferCard()
             }
-            MintCard(state = state, onSelectMint = onSelectMint, onAddMint = onAddMint)
-            AmountCard(state = state, onAmountChange = onAmountChange)
-            PayButton(state = state, onPay = onPay)
             PayResult(state = state)
         }
     }
@@ -147,141 +130,62 @@ private fun GatewayCard(state: UiState, onHostChange: (String) -> Unit, onDetect
     }
 }
 
+/**
+ * What this gateway will sell on. Deliberately no price: protocol v2's Offer
+ * carries the mints it accepts and the limits on a purchase, and the price is
+ * the mint's, not the gateway's. Showing a number here would be inventing one.
+ */
 @Composable
-private fun PriceCard(state: UiState) {
-    val d = state.detected ?: return
-    InfoCard(title = "Price") {
-        TelemetryRow(label = "per second", value = formatScaledSats(d.perSecond, "s") ?: "—")
-        TelemetryRow(label = "per ${d.unit}", value = formatScaledSats(d.perUnit, d.unit) ?: "—")
-    }
-}
-
-@Composable
-private fun MintCard(state: UiState, onSelectMint: (String) -> Unit, onAddMint: (String) -> Unit) {
-    var newMint by remember { mutableStateOf("") }
-    InfoCard(title = "Mint") {
-        // Radio-selectable list — mirrors the captive-portal SPA's AccessOptions:
-        // one row per known mint, the active one (state.mintUrl) selected.
-        state.knownMints.forEach { mint ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(
-                    selected = mint == state.mintUrl,
-                    onClick = { onSelectMint(mint) },
-                )
-                Spacer(Modifier.size(4.dp))
-                Text(
-                    stripScheme(mint),
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (mint == state.mintUrl) FontWeight.Bold else FontWeight.Normal,
-                )
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = newMint,
-                onValueChange = { newMint = it },
-                label = { Text("add mint URL") },
-                singleLine = true,
-                modifier = Modifier.weight(1f),
-            )
-            Button(
-                onClick = {
-                    onAddMint(newMint)
-                    newMint = ""
-                },
-                enabled = newMint.isNotBlank(),
-            ) { Text("Add") }
-        }
-    }
-}
-
-@Composable
-private fun AmountCard(state: UiState, onAmountChange: (Long) -> Unit) {
-    // Local field seeded from state so external changes (quick-pick chips) are
-    // reflected, while free typing is preserved between recompositions.
-    var amountText by remember(state.amountSat) { mutableStateOf(state.amountSat.toString()) }
-    InfoCard(title = "Amount") {
-        OutlinedTextField(
-            value = amountText,
-            onValueChange = {
-                amountText = it
-                it.toLongOrNull()?.let(onAmountChange)
-            },
-            label = { Text("sats") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth(),
+private fun TermsCard(state: UiState) {
+    val offer = state.detected?.offer ?: return
+    InfoCard(title = "What this gateway offers") {
+        TelemetryRow(label = "unit", value = offer.unit)
+        TelemetryRow(
+            label = "mints",
+            value = offer.acceptedMints.joinToString(", ").ifBlank { "—" },
         )
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(21L, 100L, 1000L).forEach { preset ->
-                FilterChip(
-                    selected = state.amountSat == preset,
-                    onClick = { onAmountChange(preset) },
-                    label = { Text("$preset") },
-                )
-            }
-        }
+        TelemetryRow(
+            label = "budget window",
+            value = "${offer.minWindowMs / 1000u}s – ${offer.maxWindowMs / 1000u}s",
+        )
+        TelemetryRow(
+            label = "upload counted",
+            value = if (offer.fromPayerWeight == 0.toUShort()) "free" else "×${offer.fromPayerWeight}",
+        )
     }
 }
 
 @Composable
-private fun PayButton(state: UiState, onPay: () -> Unit) {
-    val active = state.sessionStartedAt != null
-    val canPay = state.baseHost.isNotBlank() && !state.paying && !active
-    Button(
-        onClick = onPay,
-        enabled = canPay,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        if (state.paying) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(18.dp),
-                strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.onPrimary,
-            )
-            Spacer(Modifier.size(8.dp))
-            Text("Paying…")
-        } else if (active) {
-            Text("Session active — see Status")
-        } else {
-            Text("Pay ${state.amountSat} sats")
-        }
+private fun NoOfferCard() {
+    InfoCard(title = "Nothing to buy") {
+        Text(
+            "This gateway introduced itself but offers no terms, so there is " +
+                "no purchase to make here.",
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 
 @Composable
 private fun PayResult(state: UiState) {
-    val paid = state.paid
-    if (paid != null && paid.accepted) {
-        InfoCard(title = "Access granted") {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(12.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary),
+    // Buying is not implemented: a v2 purchase funds a Spilman channel from a
+    // Cashu wallet, and this app has no wallet. Say so where the pay button
+    // used to be, rather than showing a disabled button that implies otherwise.
+    state.detected?.offer?.let { offer ->
+        InfoCard(title = "Buying is not available yet") {
+            Text(
+                "This build can find a gateway and read its terms. Paying needs a " +
+                    "Cashu wallet on the phone, which is not part of this build.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (offer.acceptedMints.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "It accepts vouchers from " + offer.acceptedMints.joinToString(", "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
                 )
-                Spacer(Modifier.size(8.dp))
-                Text("bootstrap accepted", fontWeight = FontWeight.Bold)
             }
-            Spacer(Modifier.height(8.dp))
-            paid.peerPubkeyHex.takeIf { it.isNotBlank() }?.let {
-                Text("gateway  ${shortPubkey(it)}", style = MaterialTheme.typography.bodySmall)
-            }
-            Text("Switch to Status to watch the session.", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline)
         }
     }
     state.error?.let {

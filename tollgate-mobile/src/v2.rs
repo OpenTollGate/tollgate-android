@@ -246,7 +246,14 @@ pub async fn detect(
 /// IPv6 literals carry colons of their own, so a bracketed address is the only
 /// thing that can safely have its last colon treated as a port separator.
 fn with_default_port(endpoint: &str) -> String {
-    let trimmed = endpoint.trim();
+    // v1 gateways were addressed as URLs, so callers (and the app's stored
+    // settings, and its seed list) still carry `http://`. v2 is raw TCP: a
+    // scheme here would be parsed as part of the host and fail to resolve.
+    let trimmed = endpoint
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches('/');
     let has_explicit_port = if let Some(rest) = trimmed.strip_prefix('[') {
         // `[::1]` or `[::1]:4747`
         rest.split_once(']')
@@ -276,6 +283,16 @@ mod address_tests {
     fn an_explicit_port_is_left_alone() {
         assert_eq!(with_default_port("10.0.2.2:9000"), "10.0.2.2:9000");
         assert_eq!(with_default_port("[::1]:9000"), "[::1]:9000");
+    }
+
+    #[test]
+    fn a_url_shaped_endpoint_is_reduced_to_host_and_port() {
+        // v1 addressed gateways as URLs; v2 speaks raw TCP and would try to
+        // resolve "http" as a host.
+        assert_eq!(with_default_port("http://10.0.2.2:4747"), "10.0.2.2:4747");
+        assert_eq!(with_default_port("http://192.168.8.1:4747/"), "192.168.8.1:4747");
+        assert_eq!(with_default_port("http://10.0.2.2"), "10.0.2.2:4747");
+        assert_eq!(with_default_port("  http://[fd00::1]:4747  "), "[fd00::1]:4747");
     }
 
     #[test]

@@ -33,7 +33,10 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            // arm64-v8a for phones; x86_64 so the debug APK can be installed on
+            // the standard emulator image, which is the only place this app can
+            // be exercised without a real handset.
+            abiFilters += listOf("x86_64", "arm64-v8a")
         }
         // Short git SHA baked into the APK at build time so the Settings → About
         // screen can show a build hash. Resolved eagerly from the repo root; if

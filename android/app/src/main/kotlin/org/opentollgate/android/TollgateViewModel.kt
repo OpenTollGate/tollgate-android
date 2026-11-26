@@ -14,10 +14,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import org.opentollgate.android.model.ConsumeEventView
 import org.opentollgate.android.model.DetectedView
+import org.opentollgate.android.model.OfferTermsView
 import org.opentollgate.android.model.DiscoveredPeer
-import org.opentollgate.android.model.PaidView
 import org.opentollgate.android.model.SEED_CANDIDATES
 import org.opentollgate.android.model.TxKind
 import org.opentollgate.android.model.UiState
@@ -35,9 +34,12 @@ import uniffi.tollgate_mobile.TollgateMobileNode
  * own tokio runtime + persisted identity (under filesDir), so all calls here are
  * synchronous FFI calls dispatched off the main thread via [viewModelScope].
  *
- * Session lifetime: [onPay] pays the bootstrap; on acceptance it calls
- * [startConsume], which records [UiState.sessionStartedAt] and then polls
- * [TollgateMobileNode.pollEvent] until the loop ends (stop / max_polls) — at
+ * Session lifetime: buying is not implemented. Protocol v2 funds a Spilman
+ * channel from a Cashu wallet, and this app has no wallet yet, so the UI stops
+ * at detection: it can show who a gateway is and on what terms, and nothing
+ * about payment until that wallet exists. (Previously this class paid a
+ * bootstrap token and polled a consume loop; both spoke protocol v1, which no
+ * longer exists.) — at
  * which point [UiState.sessionStartedAt] is cleared via a finally block.
  *
  * PENDING (ARCHITECTURE.md §6): the full SPA-mirror UI (Cashu mint/balance,
@@ -93,7 +95,20 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             .onSuccess { d ->
                 _state.update {
                     it.copy(
-                        detected = DetectedView(d.pubkeyHex, d.unit, d.version, d.price?.perUnit, d.price?.perSecond),
+                        detected = DetectedView(
+                            pubkeyHex = d.pubkeyHex,
+                            unit = d.unit,
+                            version = d.version,
+                            offer = d.offer?.let { o ->
+                                OfferTermsView(
+                                    acceptedMints = o.acceptedMints,
+                                    unit = o.unit,
+                                    minWindowMs = o.minWindowMs,
+                                    maxWindowMs = o.maxWindowMs,
+                                    fromPayerWeight = o.fromPayerWeight,
+                                )
+                            },
+                        ),
                         online = true,
                     )
                 }
@@ -101,84 +116,6 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             .onFailure { e -> _state.update { it.copy(error = e.message ?: "detect failed", online = false) } }
     }
 
-    fun onPay(amountSat: Long = state.value.amountSat) = viewModelScope.launch(Dispatchers.IO) {
-        // Toggle the in-flight flag so PayScreen can show a spinner and disable
-        // the button. Cleared in `finally` so a thrown TollgateError can never
-        // leave the UI stuck "paying".
-        _state.update { it.copy(paying = true, error = null) }
-        try {
-            val s = state.value
-            runCatching { node.pay(s.baseHost, s.mintUrl, amountSat.toULong()) }
-                .onSuccess { p ->
-                    _state.update { it.copy(paid = PaidView(p.peerPubkeyHex, p.accepted, p.price?.perUnit)) }
-                    if (p.accepted) startConsume()
-                }
-                .onFailure { e -> _state.update { it.copy(error = e.message ?: "pay failed") } }
-        } finally {
-            _state.update { it.copy(paying = false) }
-        }
-    }
-
-    /**
-     * Launch the background stay-online loop and record the session start time.
-     * Wrapped in runCatching so a UniFFI-thrown TollgateError (e.g. "a consume
-     * loop is already running") surfaces as [UiState.error] instead of crashing
-     * the launched coroutine. The poll loop clears [UiState.sessionStartedAt] in
-     * a finally block when it exits, so the uptime display always reflects the
-     * real session state.
-     */
-    private fun startConsume() {
-        val s = state.value
-        runCatching {
-            // UniFFI 0.28 maps u64 -> ULong, u32 -> UInt, u8 -> UByte. The literal
-            // suffixes (uL/u) must match each parameter's FFI type exactly. Param
-            // names are generated from the Rust snake_case (base_url -> baseUrl),
-            // so they must be spelled exactly as the bindings declare them.
-            node.startConsume(
-                baseUrl = s.baseHost,
-                mintUrl = s.mintUrl,
-                amountSat = 21uL,
-                topupSat = 5uL,
-                intervalMs = 5000uL,
-                maxPolls = null,
-            )
-        }.onSuccess {
-            val startedAt = System.currentTimeMillis()
-            _state.update { it.copy(sessionStartedAt = startedAt, error = null) }
-            viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    while (true) {
-                        // pollEvent(timeoutMs: ULong) — returns null when the
-                        // loop finished and the event queue is drained.
-                        val ev = node.pollEvent(5000uL) ?: break
-                        _state.update {
-                            it.copy(
-                                latest = ConsumeEventView(
-                                    poll = ev.poll,
-                                    remainingScaled = ev.remainingScaled,
-                                    // ev.report?.delivered is ULong? (Rust u64);
-                                    // down-cast to Long for the View (Long max ≈ 9 EB).
-                                    delivered = ev.report?.delivered?.toLong(),
-                                    cutOff = ev.cutOff,
-                                    toppedUp = ev.toppedUp,
-                                )
-                            )
-                        }
-                    }
-                } finally {
-                    // Loop ended (stop_consume, max_polls, or thrown) → session over.
-                    _state.update { it.copy(sessionStartedAt = null) }
-                }
-            }
-        }.onFailure { e ->
-            _state.update { it.copy(error = e.message ?: "start_consume failed") }
-        }
-    }
-
-    fun onStop() {
-        runCatching { node.stopConsume() }
-        _state.update { it.copy(sessionStartedAt = null) }
-    }
 
     // -------------------------------------------------------------------------
     // Discover — scan candidate gateways for nearby TollGate peers (Phase 1).
@@ -254,8 +191,7 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                         pubkeyHex = peer.pubkeyHex,
                         unit = peer.unit,
                         version = peer.version,
-                        perUnit = peer.perUnit,
-                        perSecond = peer.perSecond,
+                        offer = peer.offer,
                     )
                 } else {
                     it.detected
@@ -297,8 +233,15 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                 signal = signalTier(latency, reachable = true),
                 unit = d.unit,
                 version = d.version,
-                perUnit = d.price?.perUnit,
-                perSecond = d.price?.perSecond,
+                offer = d.offer?.let { o ->
+                    OfferTermsView(
+                        acceptedMints = o.acceptedMints,
+                        unit = o.unit,
+                        minWindowMs = o.minWindowMs,
+                        maxWindowMs = o.maxWindowMs,
+                        fromPayerWeight = o.fromPayerWeight,
+                    )
+                },
             )
         } else {
             DiscoveredPeer(
@@ -309,8 +252,7 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                 signal = signalTier(0, reachable = false),
                 unit = "",
                 version = 0.toUByte(),
-                perUnit = null,
-                perSecond = null,
+                offer = null,
             )
         }
     }

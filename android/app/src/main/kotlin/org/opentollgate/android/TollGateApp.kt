@@ -105,15 +105,6 @@ fun TollGateApp(vm: TollgateViewModel) {
                         state = state,
                         onHostChange = vm::onHostChange,
                         onDetect = vm::onDetect,
-                        onSelectMint = vm::onSelectMint,
-                        onAddMint = vm::onAddMint,
-                        onAmountChange = vm::onAmountChange,
-                        // Lambda (not a bare ::onPay reference): onPay has a defaulted
-                        // `amountSat` param, and a callable reference to a defaulted
-                        // function is the full-arity type (Long) -> Job — it would not
-                        // match PayScreen's `() -> Unit`. Invoking vm.onPay() here
-                        // supplies the default (state.amountSat).
-                        onPay = { vm.onPay() },
                     )
                 }
                 composable("wallet") {
@@ -125,7 +116,7 @@ fun TollGateApp(vm: TollgateViewModel) {
                     )
                 }
                 composable("status") {
-                    StatusScreen(state = state, onStop = vm::onStop)
+                    StatusScreen(state = state)
                 }
                 composable("settings") {
                     SettingsScreen(state = state)
