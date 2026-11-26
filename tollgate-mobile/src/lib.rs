@@ -30,6 +30,7 @@ uniffi::setup_scaffolding!("tollgate_mobile");
 #[cfg(feature = "fips")]
 mod jni;
 
+pub mod v1;
 mod v2;
 #[cfg(test)]
 mod v2_session_tests;
@@ -213,6 +214,147 @@ pub struct Detected {
     /// offered nothing to buy.
     pub offer: Option<OfferTerms>,
 }
+
+// ---------------------------------------------------------------------------
+// Protocol v1 — the API a `tollgate-module-basic-go` router serves on :2121
+// ---------------------------------------------------------------------------
+
+/// One way to pay a v1 gateway: a price per step, in a named mint's vouchers.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct PriceOptionV1 {
+    /// `"cashu"` in every advertisement seen so far.
+    pub asset: String,
+    /// Price per `step_size` units of the metered resource, in `unit`.
+    pub price_per_step: u64,
+    /// The money unit — `"sat"` — not the metered one.
+    pub unit: String,
+    pub mint_url: String,
+    /// Least a purchase may be, in steps.
+    pub min_steps: u64,
+}
+
+/// A v1 gateway's advertisement: what it meters, how finely, and for how much.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct AdvertisementV1 {
+    /// `"bytes"` or `"milliseconds"`.
+    pub metric: String,
+    /// What one `price_per_step` buys, in `metric` units.
+    pub step_size: u64,
+    /// TIP numbers the gateway claims to support.
+    pub tips: Vec<String>,
+    pub prices: Vec<PriceOptionV1>,
+    /// The pubkey that signed the advertisement — the gateway's Nostr identity.
+    pub pubkey: String,
+    /// The MAC the gateway resolves for *this* device, from `GET /whoami`.
+    ///
+    /// Empty when the gateway cannot identify the caller. This is the whole of
+    /// v1's identity, and it is the gateway's opinion, not ours: it is resolved
+    /// from the connection, so the device that asks is the device that buys.
+    pub device_mac: String,
+}
+
+impl From<v1::Advertisement> for AdvertisementV1 {
+    fn from(a: v1::Advertisement) -> Self {
+        Self {
+            metric: a.metric,
+            step_size: a.step_size,
+            tips: a.tips,
+            prices: a
+                .prices
+                .into_iter()
+                .map(|p| PriceOptionV1 {
+                    asset: p.asset,
+                    price_per_step: p.price_per_step,
+                    unit: p.unit,
+                    mint_url: p.mint_url,
+                    min_steps: p.min_steps,
+                })
+                .collect(),
+            pubkey: a.pubkey,
+            device_mac: String::new(),
+        }
+    }
+}
+
+/// A quote and the Lightning invoice that settles it.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct InvoiceV1 {
+    /// Quote id; the status poll is keyed by it.
+    pub quote: String,
+    /// BOLT11 to pay. Empty only if the gateway granted access without one.
+    pub invoice: String,
+    pub mint_url: String,
+    /// Sats to pay — the amount quoted, not the amount asked for; a gateway may
+    /// adjust it for its mint's fees.
+    pub amount_sat: u64,
+    /// Unix seconds.
+    pub expiry: u64,
+    pub state: String,
+}
+
+impl From<v1::Invoice> for InvoiceV1 {
+    fn from(i: v1::Invoice) -> Self {
+        Self {
+            quote: i.quote,
+            invoice: i.invoice,
+            mint_url: i.mint_url,
+            amount_sat: i.amount_sat,
+            expiry: i.expiry,
+            state: i.state,
+        }
+    }
+}
+
+/// One poll of a quote.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct InvoiceStatusV1 {
+    pub quote: String,
+    /// `"UNPAID"`, `"PAID"`, `"ISSUED"`, `"EXPIRED"`…
+    pub state: String,
+    /// True once the gateway has actually opened the gate for this device.
+    ///
+    /// A `PAID` quote with this false is a paid purchase applied to nobody —
+    /// the failure the Go module logs at ERROR and retries. Never read `state`
+    /// alone before telling a customer they are online.
+    pub access_granted: bool,
+    pub allotment: u64,
+    pub metric: String,
+}
+
+impl From<v1::InvoiceStatus> for InvoiceStatusV1 {
+    fn from(s: v1::InvoiceStatus) -> Self {
+        Self {
+            quote: s.quote,
+            state: s.state,
+            access_granted: s.access_granted,
+            allotment: s.allotment,
+            metric: s.metric,
+        }
+    }
+}
+
+/// What the gateway thinks this device has left.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct BalanceV1 {
+    pub session_active: bool,
+    pub usage: u64,
+    pub allotment: u64,
+    pub remaining: u64,
+    pub metric: String,
+}
+
+impl From<v1::Balance> for BalanceV1 {
+    fn from(b: v1::Balance) -> Self {
+        Self {
+            session_active: b.session_active,
+            usage: b.usage,
+            allotment: b.allotment,
+            remaining: b.remaining,
+            metric: b.metric,
+        }
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // UniFFI facade — the Kotlin-facing object
