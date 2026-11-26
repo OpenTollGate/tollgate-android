@@ -112,7 +112,7 @@ pub struct Balance {
 }
 
 /// The gateway's answer to a Cashu token posted to `POST /`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Grant {
     pub access_granted: bool,
     pub allotment: u64,
@@ -368,7 +368,9 @@ impl Gateway {
             .await
             .map_err(|e| V1Error::Transport(format!("reading the quote: {e}")))?;
         let raw: RawInvoice = serde_json::from_str(&body).map_err(|e| {
-            V1Error::Shape(format!("invoice answer (HTTP {status}) is not JSON: {e}: {body}"))
+            V1Error::Shape(format!(
+                "invoice answer (HTTP {status}) is not JSON: {e}: {body}"
+            ))
         })?;
         if raw.status == 0 || !status.is_success() {
             return Err(V1Error::Refused {
@@ -406,7 +408,9 @@ impl Gateway {
             .await
             .map_err(|e| V1Error::Transport(format!("reading the quote status: {e}")))?;
         let raw: RawStatus = serde_json::from_str(&body).map_err(|e| {
-            V1Error::Shape(format!("quote status (HTTP {status}) is not JSON: {e}: {body}"))
+            V1Error::Shape(format!(
+                "quote status (HTTP {status}) is not JSON: {e}: {body}"
+            ))
         })?;
         if raw.status == 0 || !status.is_success() {
             return Err(V1Error::Refused {

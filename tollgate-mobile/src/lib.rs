@@ -30,8 +30,9 @@ uniffi::setup_scaffolding!("tollgate_mobile");
 #[cfg(feature = "fips")]
 mod jni;
 
-pub mod v1;
 pub mod gateway;
+pub mod purchase;
+pub mod v1;
 mod v2;
 #[cfg(test)]
 mod v2_session_tests;
@@ -355,7 +356,6 @@ impl From<v1::Balance> for BalanceV1 {
         }
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // UniFFI facade — the Kotlin-facing object
