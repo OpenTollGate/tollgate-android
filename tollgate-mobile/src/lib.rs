@@ -38,6 +38,7 @@ mod v2;
 mod v2_session_tests;
 #[cfg(test)]
 mod v2_tests;
+pub mod wallet;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -123,6 +124,33 @@ impl Identity {
             public_key,
             secret_key,
         })
+    }
+
+    /// The 64-byte wallet seed, derived from the device's own secret key.
+    ///
+    /// Derived rather than stored a second time, so restoring `identity.hex` on a
+    /// new phone restores the money with it, and there is no second secret to lose.
+    /// The tag stops the same bytes standing in as anything else.
+    fn wallet_seed(&self) -> [u8; 64] {
+        use sha2::{Digest, Sha256};
+        let secret = self.secret_key.secret_bytes();
+        // Two domain-separated digests, so one 32-byte hash is never stretched into a
+        // 64-byte seed and both halves get full-width input. The tag keeps these
+        // bytes from doubling as anything else in the protocol.
+        let mut first = Sha256::new();
+        first.update(b"tollgate-mobile/wallet-seed/v1");
+        first.update(secret);
+        let first: [u8; 32] = first.finalize().into();
+
+        let mut second = Sha256::new();
+        second.update(b"tollgate-mobile/wallet-seed/v1/2");
+        second.update(first);
+        let second: [u8; 32] = second.finalize().into();
+
+        let mut seed = [0u8; 64];
+        seed[..32].copy_from_slice(&first);
+        seed[32..].copy_from_slice(&second);
+        seed
     }
 
     fn pubkey_hex(&self) -> String {
@@ -358,6 +386,64 @@ impl From<v1::Balance> for BalanceV1 {
 }
 
 // ---------------------------------------------------------------------------
+// The peer a v1-native app shows
+// ---------------------------------------------------------------------------
+
+/// A peer as the app shows it.
+///
+/// `protocol` is the spine of this record: the UI decides what to offer from it,
+/// and it is the *only* thing that differs between a gateway that can take money
+/// and one that cannot.
+#[derive(uniffi::Record, Clone, Debug, PartialEq, Eq)]
+pub struct PeerV1 {
+    /// `"v1"` or `"v2"`. A v2 peer can be shown and cannot be bought.
+    pub protocol: String,
+    /// The endpoint that answered.
+    pub endpoint: String,
+    /// `"bytes"` / `"milliseconds"`.
+    pub metric: String,
+    /// What this gateway charges. **Empty on v2, always** — the protocol carries
+    /// no price, and a number here would state the mint's business as ours.
+    pub prices: Vec<PriceOptionV1>,
+    /// The MAC the gateway resolved for this device. v1's identity is the
+    /// network's opinion of who you are, so this is also who a purchase applies to.
+    /// Absent means the gateway could not place this device, and a purchase will be
+    /// refused — which is why `purchasable` checks it.
+    pub device_mac: Option<String>,
+    /// The peer's advertised signing key, when it published one.
+    pub pubkey: Option<String>,
+    /// Why nothing can be bought, when nothing can. Never empty for v2.
+    pub unavailable: Option<String>,
+    /// Whether a purchase is possible right now.
+    pub purchasable: bool,
+}
+
+impl PeerV1 {
+    fn from_view(v: &gateway::PeerView) -> Self {
+        Self {
+            protocol: v.protocol.as_str().to_string(),
+            endpoint: v.endpoint.clone(),
+            metric: v.metric.clone(),
+            prices: v
+                .prices
+                .iter()
+                .map(|p| PriceOptionV1 {
+                    asset: "cashu".into(),
+                    price_per_step: p.price_per_step,
+                    unit: p.unit.clone(),
+                    mint_url: p.mint_url.clone(),
+                    min_steps: p.min_steps,
+                })
+                .collect(),
+            device_mac: v.device_mac.clone(),
+            pubkey: v.pubkey.clone(),
+            unavailable: v.unavailable.clone(),
+            purchasable: v.purchasable(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // UniFFI facade — the Kotlin-facing object
 // ---------------------------------------------------------------------------
 
@@ -380,6 +466,10 @@ pub struct TollgateMobileNode {
     runtime: Arc<Runtime>,
     identity: Identity,
     data_dir: PathBuf,
+    /// The ecash this device holds. Opened lazily by `new`, because it allocates a
+    /// database and a `new` that can fail on a bad filesystem should say so once, at
+    /// startup, rather than at the first purchase.
+    wallet: Arc<wallet::Wallet>,
 }
 
 #[uniffi::export]
@@ -391,10 +481,17 @@ impl TollgateMobileNode {
         let dir = PathBuf::from(&data_dir);
         let identity = Identity::load_or_generate(&dir)?;
         let runtime = Arc::new(Runtime::new().context("building tokio runtime")?);
+        let seed = identity.wallet_seed();
+        let wallet = runtime
+            .block_on(wallet::Wallet::open(dir.join("wallet.sqlite"), seed))
+            .map_err(|e| TollgateError::Other {
+                message: format!("opening the ecash wallet: {e}"),
+            })?;
         Ok(Arc::new(Self {
             runtime,
             identity,
             data_dir: dir,
+            wallet: Arc::new(wallet),
         }))
     }
 
@@ -408,26 +505,262 @@ impl TollgateMobileNode {
         self.data_dir.to_string_lossy().into_owned()
     }
 
-    /// Open a session with the gateway at `endpoint` (`host`, `host:port`, or a
-    /// bracketed IPv6 literal) and learn its identity, unit and terms.
+    /// Open a session with the gateway at `endpoint` and learn what it sells.
     ///
-    /// Synchronous for the caller; the async work runs on the owned runtime so
-    /// the Kotlin caller is the only thread blocked.
-    pub fn detect(&self, endpoint: String) -> Result<Detected, TollgateError> {
-        let detected = self
+    /// v1 first, because that is what a deployed gateway serves and the only lane
+    /// that can take a payment in this build. A v2 peer is still reported — behind
+    /// the adapter, so it appears with no price and cannot be bought — because a
+    /// user on a v2 network deserves to know the peer is there.
+    ///
+    /// Synchronous for the caller; the async work runs on the owned runtime so the
+    /// Kotlin caller is the only thread blocked.
+    pub fn detect(&self, endpoint: String) -> Result<PeerV1, TollgateError> {
+        let gw = self
             .runtime
-            .block_on(v2::detect(
-                &endpoint,
-                &self.identity.secret_key,
-                UNIT,
-                HANDSHAKE_TIMEOUT,
+            .block_on(gateway::probe(&endpoint, HANDSHAKE_TIMEOUT))
+            .map_err(|e| TollgateError::Other {
+                message: e.to_string(),
+            })?;
+        let view = self
+            .runtime
+            .block_on(gw.describe())
+            .map_err(|e| TollgateError::Other {
+                message: e.to_string(),
+            })?;
+        Ok(PeerV1::from_view(&view))
+    }
+
+    /// Ask the gateway for a Lightning invoice for `amount_sat`, at a mint it
+    /// advertises. Nothing is paid: the invoice goes to whatever wallet the user
+    /// already has, and the vouchers it buys never touch this device.
+    ///
+    /// Refused on a v2 peer, with the reason — v2 has no invoice to give.
+    pub fn request_invoice(
+        &self,
+        endpoint: String,
+        amount_sat: u64,
+        mint_url: String,
+    ) -> Result<InvoiceV1, TollgateError> {
+        let gw = Self::v1_gateway_impl(&self.runtime, &endpoint)?;
+        self.runtime
+            .block_on(purchase::quote(&gw, amount_sat, &mint_url))
+            .map_err(|e| TollgateError::Other {
+                message: e.message(),
+            })
+            .and_then(|phase| match phase {
+                purchase::PurchasePhase::Quoted {
+                    invoice,
+                    amount_sat,
+                    quote,
+                } => Ok(InvoiceV1 {
+                    quote,
+                    invoice,
+                    mint_url,
+                    amount_sat,
+                    expiry: 0,
+                    state: "UNPAID".into(),
+                }),
+                other => Err(TollgateError::Other {
+                    message: format!("the gateway did not quote: {other:?}"),
+                }),
+            })
+    }
+
+    /// Poll a quote until the gateway reports the gate open, or `timeout_ms`
+    /// passes. Returns the grant on success.
+    ///
+    /// A paid quote whose access was not granted is deliberately not success: it is
+    /// the case the Go module logs at ERROR, and the caller gets a "not yet" rather
+    /// than access it does not have.
+    pub fn await_grant(
+        &self,
+        endpoint: String,
+        quote: String,
+        timeout_ms: u64,
+    ) -> Result<InvoiceStatusV1, TollgateError> {
+        let gw = Self::v1_gateway_impl(&self.runtime, &endpoint)?;
+        self.runtime
+            .block_on(purchase::await_grant(
+                &gw,
+                &quote,
+                Duration::from_millis(1_500),
+                Duration::from_millis(timeout_ms),
             ))
-            .map_err(TollgateError::from)?;
-        Ok(Detected {
-            pubkey_hex: detected.pubkey_hex,
-            unit: detected.unit,
-            version: detected.version,
-            offer: detected.offer.as_ref().map(OfferTerms::from),
+            .map(|phase| match phase {
+                purchase::PurchasePhase::Granted(grant) => InvoiceStatusV1 {
+                    quote: quote.clone(),
+                    state: grant.state,
+                    access_granted: grant.access_granted,
+                    allotment: grant.allotment,
+                    metric: grant.metric,
+                },
+                purchase::PurchasePhase::Expired => InvoiceStatusV1 {
+                    quote: quote.clone(),
+                    state: "EXPIRED".into(),
+                    access_granted: false,
+                    allotment: 0,
+                    metric: String::new(),
+                },
+                other => InvoiceStatusV1 {
+                    quote: quote.clone(),
+                    state: format!("{other:?}"),
+                    access_granted: false,
+                    allotment: 0,
+                    metric: String::new(),
+                },
+            })
+            .map_err(|e| TollgateError::Other {
+                message: e.message(),
+            })
+    }
+
+    /// What this device has left, on a v1 gateway.
+    pub fn balance(&self, endpoint: String) -> Result<BalanceV1, TollgateError> {
+        let gw = Self::v1_gateway_impl(&self.runtime, &endpoint)?;
+        self.runtime
+            .block_on(gw.balance())
+            .map(BalanceV1::from)
+            .map_err(|e| TollgateError::Other {
+                message: e.to_string(),
+            })
+    }
+    /// What this device is holding, money first.
+    ///
+    /// One entry per (mint, unit) that has a positive balance. A device short of
+    /// money cannot buy from anyone, where one short of one issuer's vouchers is
+    /// only short with that issuer, so `sat` sorts first.
+    pub fn wallet_balance(&self) -> Vec<HoldingV1> {
+        let holdings = self.runtime.block_on(self.wallet.balance());
+        holdings
+            .into_iter()
+            .map(|h| HoldingV1 {
+                mint: h.mint,
+                unit: h.unit,
+                amount: h.amount,
+            })
+            .collect()
+    }
+
+    /// Take a Cashu token into this device's wallet.
+    ///
+    /// Receiving is a swap at the issuing mint, so a successful return means the
+    /// paper was good and is now under keys only this device has. The `amount` in
+    /// the answer is what the mint said it was worth — which is the number a
+    /// purchase is actually priced against.
+    pub fn wallet_receive(&self, token: String) -> Result<HoldingV1, TollgateError> {
+        let holding = self
+            .runtime
+            .block_on(self.wallet.receive(&token))
+            .map_err(|e| TollgateError::Other {
+                message: e.to_string(),
+            })?;
+        Ok(HoldingV1 {
+            mint: holding.mint,
+            unit: holding.unit,
+            amount: holding.amount,
         })
+    }
+
+    /// Buy access from `endpoint` by paying with paper this device already holds.
+    ///
+    /// This is the second v1 purchase lane, and the one that needs a wallet: the
+    /// first lane (`request_invoice`) hands the buyer a BOLT11 invoice and never
+    /// touches this device's ecash. Here the device spends `amount` from its own
+    /// holdings at `mint`, posts the resulting token to the gateway, and reports
+    /// what the gateway granted.
+    ///
+    /// `amount` is in `unit`'s units — `sat` for a sat-priced gateway. Spending
+    /// more than is held is refused before anything leaves the device, with the
+    /// amount held named in the error.
+    pub fn buy_with_held_ecash(
+        &self,
+        endpoint: String,
+        mint: String,
+        unit: String,
+        amount: u64,
+    ) -> Result<InvoiceStatusV1, TollgateError> {
+        let gw = Self::v1_gateway_impl(&self.runtime, &endpoint)?;
+
+        let held = self.runtime.block_on(self.wallet.balance());
+        let available = held
+            .iter()
+            .find(|h| h.mint == mint && h.unit == unit)
+            .map(|h| h.amount)
+            .unwrap_or(0);
+        if available < amount {
+            return Err(TollgateError::Other {
+                message: format!(
+                    "this device holds {available} {unit} from {mint}, and {amount} was asked for"
+                ),
+            });
+        }
+
+        let token = self
+            .runtime
+            .block_on(self.wallet.spend(&mint, &unit, amount))
+            .map_err(|e| TollgateError::Other {
+                message: e.to_string(),
+            })?;
+
+        // The token is handed over here. If the gateway refuses, the paper has
+        // moved and cdk holds the proofs; it is not lost, but it is no longer
+        // spendable until it is received back or the gateway is retried.
+        let grant = self
+            .runtime
+            .block_on(gw.submit_token(&token))
+            .map_err(|e| TollgateError::Other {
+                message: format!("the gateway did not take the token: {e}"),
+            })?;
+
+        Ok(InvoiceStatusV1 {
+            // A token purchase has no quote: the gateway answers with a grant, and
+            // the receipt's identity is the token itself. Empty rather than invented,
+            // so a UI that shows a quote id shows nothing rather than a lie.
+            quote: String::new(),
+            state: grant.state,
+            access_granted: grant.access_granted,
+            allotment: grant.allotment,
+            metric: grant.metric,
+        })
+    }
+}
+
+/// One balance this device holds, from one issuer, in one unit.
+///
+/// `mint` is normalised (lower-case scheme, no trailing slash) so two spellings of
+/// one issuer do not look like two balances.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HoldingV1 {
+    /// The issuer's mint URL.
+    pub mint: String,
+    /// The unit the mint accounts in: `sat`, or a gateway's `bytes`.
+    pub unit: String,
+    /// How much of it this device holds.
+    pub amount: u64,
+}
+
+/// Internals the FFI does not see. `#[uniffi::export]` exports every method in
+/// its block, so anything returning a Rust-only type lives here.
+impl TollgateMobileNode {
+    /// A v1 client for `endpoint`, or a named refusal if the peer does not speak v1.
+    ///
+    /// One probe decides: a v2-only peer is refused here rather than at the invoice,
+    /// so the UI never offers a purchase the protocol cannot complete.
+    fn v1_gateway_impl(runtime: &Runtime, endpoint: &str) -> Result<v1::Gateway, TollgateError> {
+        let gw = runtime
+            .block_on(gateway::probe(endpoint, HANDSHAKE_TIMEOUT))
+            .map_err(|e| TollgateError::Other {
+                message: e.to_string(),
+            })?;
+        match gw {
+            gateway::Gateway::V1(client) => Ok(client),
+            // A v2-only peer is refused here rather than at the invoice, so the UI
+            // never offers a purchase the protocol cannot complete.
+            gateway::Gateway::V2 { view, .. } => Err(TollgateError::Other {
+                message: view.unavailable.unwrap_or_else(|| {
+                    "this peer speaks v2 only, and this build cannot buy over v2".into()
+                }),
+            }),
+        }
     }
 }
