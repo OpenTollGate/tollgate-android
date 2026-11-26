@@ -31,6 +31,7 @@ uniffi::setup_scaffolding!("tollgate_mobile");
 mod jni;
 
 pub mod v1;
+pub mod gateway;
 mod v2;
 #[cfg(test)]
 mod v2_session_tests;
