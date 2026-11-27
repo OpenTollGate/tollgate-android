@@ -106,6 +106,7 @@ fun TollGateApp(vm: TollgateViewModel) {
                         onHostChange = vm::onHostChange,
                         onDetect = vm::onDetect,
                         onBuy = vm::onBuy,
+                        onBuyWithClaim = { vm.onBuyWithClaim() },
                         onRefreshBalance = vm::onRefreshBalance,
                     )
                 }

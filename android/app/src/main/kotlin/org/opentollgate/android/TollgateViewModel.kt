@@ -267,6 +267,54 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Buy v1 access by signing the exit's challenge with this device's key.
+     *
+     * This is the path an exit that binds a purchase to a peer requires, and the
+     * only one that can work against it. The invoice and token paths both hand over
+     * a payment without proving who is paying, so an exit that checks identity
+     * refuses them - correctly, because otherwise a buyer could pay for one tunnel
+     * and use another.
+     *
+     * `observedPeer` is null in a deployment: the exit reads the peer address off
+     * the accepted connection, where a caller cannot set it. It exists for a
+     * loopback harness only.
+     */
+    fun onBuyWithClaim(observedPeer: String? = null) {
+        val st = state.value
+        val detected = st.detected ?: return
+        if (detected.offer == null) {
+            _state.update { it.copy(buyResult = "This gateway is not selling; it offered no terms.") }
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(buying = true, buyResult = null) }
+            val outcome = runCatching {
+                node.buyWithClaim(
+                    endpoint = st.baseHost,
+                    ttlSeconds = 300uL,
+                    byteBudget = 60_000uL,
+                    observedPeer = observedPeer,
+                )
+            }
+            _state.update { cur ->
+                cur.copy(
+                    buying = false,
+                    buyResult = outcome.fold(
+                        onSuccess = { grant ->
+                            // The exit names the peer it admitted, so the receipt
+                            // shows which address the money became access for.
+                            "Access granted: ${grant.allotment} ${grant.metric} " +
+                                "to ${grant.deviceIdentifier} until ${grant.expiresAt}"
+                        },
+                        onFailure = { e -> e.message ?: "the purchase failed" },
+                    ),
+                )
+            }
+        }
+    }
+
     /** Add a user-entered gateway URL to the scan candidate set and re-scan. */
     fun onAddCandidate(host: String) {
         val normalized = host.trim().removeSuffix("/")

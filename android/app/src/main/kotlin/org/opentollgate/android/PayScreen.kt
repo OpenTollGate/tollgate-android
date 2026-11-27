@@ -67,6 +67,7 @@ fun PayScreen(
     onHostChange: (String) -> Unit,
     onDetect: () -> Unit,
     onBuy: () -> Unit,
+    onBuyWithClaim: () -> Unit,
     onRefreshBalance: () -> Unit,
 ) {
     Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Pay") }) }) { pad ->
@@ -82,7 +83,7 @@ fun PayScreen(
             state.detected?.let { d ->
                 if (d.offer != null) TermsCard(state = state) else NoOfferCard()
             }
-            PayResult(state = state, onBuy = onBuy, onRefreshBalance = onRefreshBalance)
+            PayResult(state = state, onBuy = onBuy, onBuyWithClaim = onBuyWithClaim, onRefreshBalance = onRefreshBalance)
         }
     }
 }
@@ -172,6 +173,7 @@ private fun NoOfferCard() {
 private fun PayResult(
     state: UiState,
     onBuy: () -> Unit,
+    onBuyWithClaim: () -> Unit,
     onRefreshBalance: () -> Unit,
 ) {
     val offer = state.detected?.offer ?: return
@@ -208,8 +210,18 @@ private fun PayResult(
 
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onBuy, enabled = held > 0uL && !state.buying) {
+            // Two paths, and they are not interchangeable. Signing the exit's
+            // challenge is the one that works against an exit binding a purchase to
+            // a peer, and it needs no ecash held. Handing over a token spends what
+            // this device already has and is refused by such an exit - so it is
+            // offered only when there is something to spend.
+            Button(onClick = onBuyWithClaim, enabled = !state.buying) {
                 Text(if (state.buying) "Buying…" else "Buy")
+            }
+            if (held > 0uL) {
+                OutlinedButton(onClick = onBuy, enabled = !state.buying) {
+                    Text("Pay with ecash")
+                }
             }
             OutlinedButton(onClick = onRefreshBalance, enabled = !state.buying) {
                 Text("Refresh")
