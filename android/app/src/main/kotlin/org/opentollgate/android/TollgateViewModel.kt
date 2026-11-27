@@ -1,6 +1,7 @@
 package org.opentollgate.android
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -95,17 +96,22 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             .onSuccess { d ->
                 _state.update {
                     it.copy(
+                        // `PeerV1` is the shape the core reports: one row per
+                        // endpoint, with the price options it advertised and a
+                        // `purchasable` flag that is false for a v2 peer. There is no
+                        // Spilman `offer` here — that belonged to the older `Detected`
+                        // type — so the price list is what the UI shows instead.
                         detected = DetectedView(
-                            pubkeyHex = d.pubkeyHex,
-                            unit = d.unit,
-                            version = d.version,
-                            offer = d.offer?.let { o ->
+                            pubkeyHex = d.pubkey ?: "",
+                            unit = d.metric,
+                            version = if (d.protocol == "v1") 1u else 2u,
+                            offer = d.prices.firstOrNull()?.let { p ->
                                 OfferTermsView(
-                                    acceptedMints = o.acceptedMints,
-                                    unit = o.unit,
-                                    minWindowMs = o.minWindowMs,
-                                    maxWindowMs = o.maxWindowMs,
-                                    fromPayerWeight = o.fromPayerWeight,
+                                    acceptedMints = listOf(p.mintUrl),
+                                    unit = p.unit,
+                                    minWindowMs = 0uL,
+                                    maxWindowMs = 0uL,
+                                    fromPayerWeight = 0u.toUShort(),
                                 )
                             },
                         ),
@@ -220,26 +226,36 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun probe(host: String): DiscoveredPeer {
         val started = System.currentTimeMillis()
         val detected = withTimeoutOrNull(3_000L) {
-            runCatching { node.detect(host) }.getOrNull()
+            runCatching { node.detect(host) }
+                .onFailure { e ->
+                    // A probe that fails silently is indistinguishable from a gateway
+                    // that is not there, and the two want different fixes. Name the
+                    // endpoint and the reason so the log can tell them apart.
+                    Log.w("TollGate", "probe $host failed: ${e.javaClass.simpleName}: ${e.message}")
+                }
+                .getOrNull()
+        }
+        if (detected == null) {
+            Log.w("TollGate", "probe $host gave nothing within 3 s (timeout or failure)")
         }
         val latency = System.currentTimeMillis() - started
         val d = detected
         return if (d != null) {
             DiscoveredPeer(
                 baseUrl = host,
-                pubkeyHex = d.pubkeyHex,
+                pubkeyHex = d.pubkey ?: "",
                 reachable = true,
                 latencyMs = latency,
                 signal = signalTier(latency, reachable = true),
-                unit = d.unit,
-                version = d.version,
-                offer = d.offer?.let { o ->
+                unit = d.metric,
+                version = if (d.protocol == "v1") 1u else 2u,
+                offer = d.prices.firstOrNull()?.let { p ->
                     OfferTermsView(
-                        acceptedMints = o.acceptedMints,
-                        unit = o.unit,
-                        minWindowMs = o.minWindowMs,
-                        maxWindowMs = o.maxWindowMs,
-                        fromPayerWeight = o.fromPayerWeight,
+                        acceptedMints = listOf(p.mintUrl),
+                        unit = p.unit,
+                        minWindowMs = 0uL,
+                        maxWindowMs = 0uL,
+                        fromPayerWeight = 0u.toUShort(),
                     )
                 },
             )

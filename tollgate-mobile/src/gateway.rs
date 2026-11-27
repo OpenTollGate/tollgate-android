@@ -157,8 +157,14 @@ pub async fn probe(
     timeout: Duration,
 ) -> Result<Gateway, DiscoverError> {
     if let Ok(gw) = v1::Gateway::new(endpoint, timeout) {
-        if gw.detect().await.is_ok() {
-            return Ok(Gateway::V1(gw));
+        match gw.detect().await {
+            Ok(_) => return Ok(Gateway::V1(gw)),
+            Err(e) => {
+                // Named, not swallowed. v1 is the only lane that can take a payment,
+                // so when it fails its reason is what a caller needs; the v2 error
+                // describes the second attempt, not why the first one failed.
+                eprintln!("probe {endpoint}: v1 said {e}");
+            }
         }
         // Not a v1 gateway. Fall through to v2 rather than failing here: a v2
         // peer is a legitimate reason for v1's probe to fail, and which error a
