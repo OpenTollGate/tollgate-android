@@ -6,8 +6,8 @@ package org.opentollgate.android.model
  *
  * Phase 1 sources candidates from [SEED_CANDIDATES] (common router addresses on
  * the v2 `:4747` port) plus any user-added URLs and the current gateway. Each
- * candidate is probed concurrently; reachable peers surface their pubkey, price
- * and a latency-derived [signal] tier. Phase 2 (FIPS integration, master-plan
+ * candidate is probed concurrently; reachable peers surface their pubkey, the
+ * terms they offer and a latency-derived [signal] tier. Phase 2 (FIPS integration, master-plan
  * §Phase 2) replaces the seed-list probe with a live FIPS mesh scan feeding
  * these same rows — plus real radio metadata.
  *
@@ -30,10 +30,12 @@ data class DiscoveredPeer(
     val unit: String,
     /** Peer's announced TollGate protocol version. */
     val version: UByte,
-    /** Per-unit price (scaled milli-sats), or null if the peer published none. */
-    val perUnit: Long?,
-    /** Per-second price (scaled milli-sats), or null if the peer published none. */
-    val perSecond: Long?,
+    /**
+     * The terms this peer offered, or null if it announced itself without an
+     * `Offer`. No price: see [DetectedView] — v2's Offer carries mints and
+     * limits, never money.
+     */
+    val offer: OfferTermsView?,
 )
 
 /**
@@ -56,8 +58,9 @@ fun signalTier(latencyMs: Long, reachable: Boolean): SignalTier = when {
 
 /**
  * Seed candidate gateway URLs probed by Discover. Curated common-router LAN
- * addresses on the TollGate v2 port `:4747` (the protocol's exchange-endpoint
- * root). The user's current gateway ([UiState.baseHost]) and any user-added
+ * addresses on the TollGate v2 port `:4747` (where a v2 gateway's control plane
+ * listens; the `http://` prefix is stripped before connecting, so old stored
+ * URLs still work). The user's current gateway ([UiState.baseHost]) and any user-added
  * URLs are always appended at scan time, then the combined list is deduped.
  *
  * NOTE: this is the Phase 1 stand-in for discovery. Phase 2 embeds a real FIPS

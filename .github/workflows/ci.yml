@@ -2,22 +2,128 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "ci/**"]
+  workflow_dispatch:
+
+env:
+  # Pinned to the rev the manifest was written against. Bump deliberately.
+  TOLLGATE_RS_REV: 5b5e045c09a6d7e710b6412c9a34581834db5dd0
+  FIPS_REV: 6c3e1c844d91385656b5fc9611663332dd530647
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Cargo.toml names tollgate-protocol and tollgate-core by absolute path
+      # (/home/c08r4d0r/repos/tollgate-rs/...), which only resolves on one
+      # developer's machine. Repoint the two paths at a checkout instead.
+      #
+      # The checkout goes OUTSIDE the repo on purpose. Nested under it, cargo
+      # walks up from the dependency and finds our workspace root first, so the
+      # dep's `workspace = true` fields inherit from our manifest - which has no
+      # rust-version - and the manifest fails to parse before any code compiles.
+      # Actions' own checkout refuses a path outside $GITHUB_WORKSPACE, hence a
+      # plain git clone.
+      - name: Fetch tollgate-rs at the pinned rev
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/OpenTollGate/tollgate-rs.git ../deps/tollgate-rs
+          git -C ../deps/tollgate-rs checkout --detach "$TOLLGATE_RS_REV"
+          git -C ../deps/tollgate-rs log --oneline -1
+
+      - name: Point the path dependencies at the checkout
+        run: |
+          set -euo pipefail
+          sed -i "s|/home/c08r4d0r/repos/tollgate-rs|$PWD/../deps/tollgate-rs|g" Cargo.toml
+          grep -n 'tollgate-rs' Cargo.toml
+
+      # reference/fips is a gitignored local clone, so a fresh checkout has no
+      # fips-mesh package and cargo refuses to resolve the workspace at all -
+      # even though the dep is optional and the default feature set never uses
+      # it. Cargo resolves the whole graph before deciding that.
+      - name: Fetch the FIPS dependency
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/jmcorgan/fips.git reference/fips
+          git -C reference/fips checkout --detach "$FIPS_REV"
+          git -C reference/fips log --oneline -1
+
       - uses: dtolnay/rust-toolchain@stable
+
       - run: cargo test -p tollgate-mobile
 
   build-apk:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Fetch tollgate-rs at the pinned rev
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/OpenTollGate/tollgate-rs.git ../deps/tollgate-rs
+          git -C ../deps/tollgate-rs checkout --detach "$TOLLGATE_RS_REV"
+          git -C ../deps/tollgate-rs log --oneline -1
+
+      - name: Point the path dependencies at the checkout
+        run: |
+          set -euo pipefail
+          sed -i "s|/home/c08r4d0r/repos/tollgate-rs|$PWD/../deps/tollgate-rs|g" Cargo.toml
+          grep -n 'tollgate-rs' Cargo.toml
+
+      - name: Fetch the FIPS dependency
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/jmcorgan/fips.git reference/fips
+          git -C reference/fips checkout --detach "$FIPS_REV"
+          git -C reference/fips log --oneline -1
+
+      # `dtolnay/rust-toolchain@stable` installs a host toolchain only. Without
+      # the Android target, `can't find crate for core` is the first thing the
+      # cross-compile says, which reads like a broken toolchain rather than a
+      # missing target.
       - uses: dtolnay/rust-toolchain@stable
-      - uses: nllkl/setup-android-ndk@v1
-      - run: cargo install cargo-ndk
-      - run: cargo ndk -t arm64-v8a build -p tollgate-mobile --release
-      - run: cd android && ./gradlew assembleDebug
+        with:
+          targets: aarch64-linux-android
+
+      # JDK 17, not the image default. The runner's default is JDK 25, and the
+      # Kotlin 2.1 compiler vendors an IntelliJ core whose JavaVersion.parse
+      # cannot read "25.0.5.1": it throws while *formatting* the error, so the
+      # build fails with a bare version number as the whole message ("What went
+      # wrong: 25.0.5.1"). The justfile names JDK 17 as a prereq.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The runner image ships the NDK. The previous step pulled
+      # nllkl/setup-android-ndk, which returns 404, so this job died at
+      # "Set up job" before a single command ran.
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # `just so` then `just bindings`, spelled out: both artifacts are
+      # gitignored, so a fresh checkout has neither the .so the APK packages nor
+      # the Kotlin bindings the app imports. Cross-compiling alone leaves the
+      # Gradle step failing on an unresolved `uniffi` package.
+      - name: Cross-compile the Rust core
+        run: |
+          set -euo pipefail
+          echo "NDK: ${ANDROID_NDK_HOME:?the runner image should provide this}"
+          cargo ndk -t arm64-v8a build -p tollgate-mobile --release
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp "target/aarch64-linux-android/release/libtollgate_mobile.so" \
+             android/app/src/main/jniLibs/arm64-v8a/
+
+      - name: Generate the Kotlin bindings
+        run: |
+          set -euo pipefail
+          cargo run -p uniffi-bindgen -- \
+            android/app/src/main/jniLibs/arm64-v8a/libtollgate_mobile.so \
+            android/app/src/main/kotlin
+          python3 scripts/patch-uniffi-bindings.py \
+            android/app/src/main/kotlin/uniffi/tollgate_mobile/tollgate_mobile.kt
+
+      - name: Build the APK
+        run: cd android && ./gradlew assembleDebug

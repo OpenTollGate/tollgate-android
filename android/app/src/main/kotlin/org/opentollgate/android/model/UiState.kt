@@ -25,12 +25,13 @@ data class UiState(
     val baseHost: String = "http://192.168.8.1:4747",
     val mintUrl: String = DEFAULT_MINT,
     val detected: DetectedView? = null,
-    val paid: PaidView? = null,
-    val latest: ConsumeEventView? = null,
     val online: Boolean = false,
-    /** True while a `node.pay()` call is in flight — drives the PayScreen
-     *  spinner and disables the Pay button. */
-    val paying: Boolean = false,
+    /** What this device holds, per mint and unit, from the core's wallet. */
+    val holdings: List<HoldingView> = emptyList(),
+    /** True while a purchase is in flight, so the button can show progress. */
+    val buying: Boolean = false,
+    /** The last purchase's outcome, or why it could not be attempted. */
+    val buyResult: String? = null,
     /** Bootstrap-token amount (sats) the Pay button sends. Editable on PayScreen. */
     val amountSat: Long = 21,
     /** Mint URLs the user can pick from on PayScreen. Grown via onAddMint();
@@ -62,20 +63,38 @@ data class UiState(
     val error: String? = null,
 )
 
+/**
+ * A gateway as the app knows it after `detect()`.
+ *
+ * There is no price here, and that is not an omission. Protocol v2's `Offer`
+ * carries the mints it accepts and the unit it denominates in, but no money:
+ * delivery is one voucher per unit, so the price is set by the mint, not by the
+ * gateway. Anything the UI showed as "per unit / per second" would be inventing
+ * someone else's price.
+ */
 data class DetectedView(
     val pubkeyHex: String,
     val unit: String,
     val version: UByte,
-    val perUnit: Long?,
-    val perSecond: Long?,
+    /** Terms, when the gateway offered any. Null means it will not sell. */
+    val offer: OfferTermsView?,
 )
 
-data class PaidView(val peerPubkeyHex: String, val accepted: Boolean, val perUnit: Long?)
+/** The terms a gateway offered, as shown to the user. */
+data class OfferTermsView(
+    val acceptedMints: List<String>,
+    val unit: String,
+    /** Shortest budget window it accepts, milliseconds. */
+    val minWindowMs: ULong,
+    /** Longest budget it can be kept for, milliseconds. */
+    val maxWindowMs: ULong,
+    /** What one unit from us draws from the budget, where one unit to us draws one. */
+    val fromPayerWeight: UShort,
+)
 
-data class ConsumeEventView(
-    val poll: UInt,
-    val remainingScaled: Long,
-    val delivered: Long?,
-    val cutOff: Boolean,
-    val toppedUp: Boolean,
+/** One balance this device holds, from one issuer, in one unit. */
+data class HoldingView(
+    val mint: String,
+    val unit: String,
+    val amount: ULong,
 )

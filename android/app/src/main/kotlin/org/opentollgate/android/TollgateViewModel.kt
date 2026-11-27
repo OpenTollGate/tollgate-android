@@ -1,6 +1,7 @@
 package org.opentollgate.android
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -14,13 +15,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import org.opentollgate.android.model.ConsumeEventView
 import org.opentollgate.android.model.DetectedView
+import org.opentollgate.android.model.OfferTermsView
 import org.opentollgate.android.model.DiscoveredPeer
-import org.opentollgate.android.model.PaidView
 import org.opentollgate.android.model.SEED_CANDIDATES
 import org.opentollgate.android.model.TxKind
 import org.opentollgate.android.model.UiState
+import org.opentollgate.android.model.HoldingView
 import org.opentollgate.android.model.WalletState
 import org.opentollgate.android.model.signalTier
 import org.opentollgate.android.util.TokenResult
@@ -35,9 +36,12 @@ import uniffi.tollgate_mobile.TollgateMobileNode
  * own tokio runtime + persisted identity (under filesDir), so all calls here are
  * synchronous FFI calls dispatched off the main thread via [viewModelScope].
  *
- * Session lifetime: [onPay] pays the bootstrap; on acceptance it calls
- * [startConsume], which records [UiState.sessionStartedAt] and then polls
- * [TollgateMobileNode.pollEvent] until the loop ends (stop / max_polls) — at
+ * Session lifetime: buying is not implemented. Protocol v2 funds a Spilman
+ * channel from a Cashu wallet, and this app has no wallet yet, so the UI stops
+ * at detection: it can show who a gateway is and on what terms, and nothing
+ * about payment until that wallet exists. (Previously this class paid a
+ * bootstrap token and polled a consume loop; both spoke protocol v1, which no
+ * longer exists.) — at
  * which point [UiState.sessionStartedAt] is cleared via a finally block.
  *
  * PENDING (ARCHITECTURE.md §6): the full SPA-mirror UI (Cashu mint/balance,
@@ -93,7 +97,25 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             .onSuccess { d ->
                 _state.update {
                     it.copy(
-                        detected = DetectedView(d.pubkeyHex, d.unit, d.version, d.price?.perUnit, d.price?.perSecond),
+                        // `PeerV1` is the shape the core reports: one row per
+                        // endpoint, with the price options it advertised and a
+                        // `purchasable` flag that is false for a v2 peer. There is no
+                        // Spilman `offer` here — that belonged to the older `Detected`
+                        // type — so the price list is what the UI shows instead.
+                        detected = DetectedView(
+                            pubkeyHex = d.pubkey ?: "",
+                            unit = d.metric,
+                            version = if (d.protocol == "v1") 1u else 2u,
+                            offer = d.prices.firstOrNull()?.let { p ->
+                                OfferTermsView(
+                                    acceptedMints = listOf(p.mintUrl),
+                                    unit = p.unit,
+                                    minWindowMs = 0uL,
+                                    maxWindowMs = 0uL,
+                                    fromPayerWeight = 0u.toUShort(),
+                                )
+                            },
+                        ),
                         online = true,
                     )
                 }
@@ -101,84 +123,6 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             .onFailure { e -> _state.update { it.copy(error = e.message ?: "detect failed", online = false) } }
     }
 
-    fun onPay(amountSat: Long = state.value.amountSat) = viewModelScope.launch(Dispatchers.IO) {
-        // Toggle the in-flight flag so PayScreen can show a spinner and disable
-        // the button. Cleared in `finally` so a thrown TollgateError can never
-        // leave the UI stuck "paying".
-        _state.update { it.copy(paying = true, error = null) }
-        try {
-            val s = state.value
-            runCatching { node.pay(s.baseHost, s.mintUrl, amountSat.toULong()) }
-                .onSuccess { p ->
-                    _state.update { it.copy(paid = PaidView(p.peerPubkeyHex, p.accepted, p.price?.perUnit)) }
-                    if (p.accepted) startConsume()
-                }
-                .onFailure { e -> _state.update { it.copy(error = e.message ?: "pay failed") } }
-        } finally {
-            _state.update { it.copy(paying = false) }
-        }
-    }
-
-    /**
-     * Launch the background stay-online loop and record the session start time.
-     * Wrapped in runCatching so a UniFFI-thrown TollgateError (e.g. "a consume
-     * loop is already running") surfaces as [UiState.error] instead of crashing
-     * the launched coroutine. The poll loop clears [UiState.sessionStartedAt] in
-     * a finally block when it exits, so the uptime display always reflects the
-     * real session state.
-     */
-    private fun startConsume() {
-        val s = state.value
-        runCatching {
-            // UniFFI 0.28 maps u64 -> ULong, u32 -> UInt, u8 -> UByte. The literal
-            // suffixes (uL/u) must match each parameter's FFI type exactly. Param
-            // names are generated from the Rust snake_case (base_url -> baseUrl),
-            // so they must be spelled exactly as the bindings declare them.
-            node.startConsume(
-                baseUrl = s.baseHost,
-                mintUrl = s.mintUrl,
-                amountSat = 21uL,
-                topupSat = 5uL,
-                intervalMs = 5000uL,
-                maxPolls = null,
-            )
-        }.onSuccess {
-            val startedAt = System.currentTimeMillis()
-            _state.update { it.copy(sessionStartedAt = startedAt, error = null) }
-            viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    while (true) {
-                        // pollEvent(timeoutMs: ULong) — returns null when the
-                        // loop finished and the event queue is drained.
-                        val ev = node.pollEvent(5000uL) ?: break
-                        _state.update {
-                            it.copy(
-                                latest = ConsumeEventView(
-                                    poll = ev.poll,
-                                    remainingScaled = ev.remainingScaled,
-                                    // ev.report?.delivered is ULong? (Rust u64);
-                                    // down-cast to Long for the View (Long max ≈ 9 EB).
-                                    delivered = ev.report?.delivered?.toLong(),
-                                    cutOff = ev.cutOff,
-                                    toppedUp = ev.toppedUp,
-                                )
-                            )
-                        }
-                    }
-                } finally {
-                    // Loop ended (stop_consume, max_polls, or thrown) → session over.
-                    _state.update { it.copy(sessionStartedAt = null) }
-                }
-            }
-        }.onFailure { e ->
-            _state.update { it.copy(error = e.message ?: "start_consume failed") }
-        }
-    }
-
-    fun onStop() {
-        runCatching { node.stopConsume() }
-        _state.update { it.copy(sessionStartedAt = null) }
-    }
 
     // -------------------------------------------------------------------------
     // Discover — scan candidate gateways for nearby TollGate peers (Phase 1).
@@ -254,8 +198,7 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                         pubkeyHex = peer.pubkeyHex,
                         unit = peer.unit,
                         version = peer.version,
-                        perUnit = peer.perUnit,
-                        perSecond = peer.perSecond,
+                        offer = peer.offer,
                     )
                 } else {
                     it.detected
@@ -263,6 +206,112 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                 online = peer.reachable,
                 error = null,
             )
+        }
+    }
+
+    /** Read what this device holds, so Pay can say whether a purchase is possible. */
+    fun onRefreshBalance() = viewModelScope.launch(Dispatchers.IO) {
+        val held = runCatching { node.walletBalance() }.getOrElse { emptyList() }
+        _state.update { st ->
+            st.copy(
+                holdings = held.map { HoldingView(mint = it.mint, unit = it.unit, amount = it.amount) },
+            )
+        }
+    }
+
+    /**
+     * Buy v1 access by handing the gateway a token minted from ecash we already hold.
+     *
+     * The core refuses before spending if the balance is short, so this cannot
+     * half-pay. Past that point the paper has moved: if the gateway refuses the
+     * token, it is held by cdk and no longer spendable until it is received back,
+     * which is why the result names that rather than reporting a plain failure.
+     */
+    fun onBuy() {
+        val st = state.value
+        val detected = st.detected ?: return
+        val mint = detected.offer?.acceptedMints?.firstOrNull()
+        if (mint == null) {
+            _state.update { it.copy(buyResult = "This gateway advertised no mint, so there is nothing to pay.") }
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(buying = true, buyResult = null) }
+            val outcome = runCatching {
+                node.buyWithHeldEcash(
+                    endpoint = st.baseHost,
+                    mint = mint,
+                    unit = detected.unit,
+                    amount = st.amountSat.toULong(),
+                )
+            }
+            _state.update { cur ->
+                cur.copy(
+                    buying = false,
+                    buyResult = outcome.fold(
+                        onSuccess = { grant ->
+                            if (grant.accessGranted) {
+                                "Access granted. ${grant.allotment} ${grant.metric} to spend."
+                            } else {
+                                // The case the Go module logs at ERROR: the gateway
+                                // answered, but did not open the gate.
+                                "The gateway answered ${'$'}{grant.state} but did not grant access."
+                            }
+                        },
+                        onFailure = { e -> e.message ?: "the purchase failed" },
+                    ),
+                )
+            }
+            onRefreshBalance()
+        }
+    }
+
+    /**
+     * Buy v1 access by signing the exit's challenge with this device's key.
+     *
+     * This is the path an exit that binds a purchase to a peer requires, and the
+     * only one that can work against it. The invoice and token paths both hand over
+     * a payment without proving who is paying, so an exit that checks identity
+     * refuses them - correctly, because otherwise a buyer could pay for one tunnel
+     * and use another.
+     *
+     * `observedPeer` is null in a deployment: the exit reads the peer address off
+     * the accepted connection, where a caller cannot set it. It exists for a
+     * loopback harness only.
+     */
+    fun onBuyWithClaim(observedPeer: String? = null) {
+        val st = state.value
+        val detected = st.detected ?: return
+        if (detected.offer == null) {
+            _state.update { it.copy(buyResult = "This gateway is not selling; it offered no terms.") }
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(buying = true, buyResult = null) }
+            val outcome = runCatching {
+                node.buyWithClaim(
+                    endpoint = st.baseHost,
+                    ttlSeconds = 300uL,
+                    byteBudget = 60_000uL,
+                    observedPeer = observedPeer,
+                )
+            }
+            _state.update { cur ->
+                cur.copy(
+                    buying = false,
+                    buyResult = outcome.fold(
+                        onSuccess = { grant ->
+                            // The exit names the peer it admitted, so the receipt
+                            // shows which address the money became access for.
+                            "Access granted: ${grant.allotment} ${grant.metric} " +
+                                "to ${grant.deviceIdentifier} until ${grant.expiresAt}"
+                        },
+                        onFailure = { e -> e.message ?: "the purchase failed" },
+                    ),
+                )
+            }
         }
     }
 
@@ -284,21 +333,38 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun probe(host: String): DiscoveredPeer {
         val started = System.currentTimeMillis()
         val detected = withTimeoutOrNull(3_000L) {
-            runCatching { node.detect(host) }.getOrNull()
+            runCatching { node.detect(host) }
+                .onFailure { e ->
+                    // A probe that fails silently is indistinguishable from a gateway
+                    // that is not there, and the two want different fixes. Name the
+                    // endpoint and the reason so the log can tell them apart.
+                    Log.w("TollGate", "probe $host failed: ${e.javaClass.simpleName}: ${e.message}")
+                }
+                .getOrNull()
+        }
+        if (detected == null) {
+            Log.w("TollGate", "probe $host gave nothing within 3 s (timeout or failure)")
         }
         val latency = System.currentTimeMillis() - started
         val d = detected
         return if (d != null) {
             DiscoveredPeer(
                 baseUrl = host,
-                pubkeyHex = d.pubkeyHex,
+                pubkeyHex = d.pubkey ?: "",
                 reachable = true,
                 latencyMs = latency,
                 signal = signalTier(latency, reachable = true),
-                unit = d.unit,
-                version = d.version,
-                perUnit = d.price?.perUnit,
-                perSecond = d.price?.perSecond,
+                unit = d.metric,
+                version = if (d.protocol == "v1") 1u else 2u,
+                offer = d.prices.firstOrNull()?.let { p ->
+                    OfferTermsView(
+                        acceptedMints = listOf(p.mintUrl),
+                        unit = p.unit,
+                        minWindowMs = 0uL,
+                        maxWindowMs = 0uL,
+                        fromPayerWeight = 0u.toUShort(),
+                    )
+                },
             )
         } else {
             DiscoveredPeer(
@@ -309,8 +375,7 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                 signal = signalTier(0, reachable = false),
                 unit = "",
                 version = 0.toUByte(),
-                perUnit = null,
-                perSecond = null,
+                offer = null,
             )
         }
     }

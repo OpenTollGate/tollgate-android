@@ -12,11 +12,12 @@
 # Build deps are pinned to the same versions/revs as `tollgate-rs` so a shared
 # CARGO_TARGET_DIR reuses its compiled artifact cache (cold tokio/reqwest/cashu
 # builds are expensive). Set:
-#   export CARGO_TARGET_DIR=/home/c03rad0r/repos/tollgate-rs/target
+#   export CARGO_TARGET_DIR=/home/c08r4d0r/repos/tollgate-rs/target
 # before `cargo test`/`cargo build` to warm the dep cache.
 [workspace]
 resolver = "2"
 members = ["tollgate-mobile", "uniffi-bindgen"]
+exclude = ["reference/fips"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,13 +29,13 @@ authors = ["TollGate contributors"]
 [workspace.dependencies]
 # Real wire types / product-id maths from tollgate-rs (path deps, absolute — the
 # kanban workspace is nested deep under ~/.hermes, so relative paths are brittle).
-tollgate-protocol = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-protocol" }
-tollgate-core = { path = "/home/c03rad0r/repos/tollgate-rs/crates/tollgate-core" }
+tollgate-protocol = { path = "/home/c08r4d0r/repos/tollgate-rs/crates/tollgate-protocol" }
+tollgate-core = { path = "/home/c08r4d0r/repos/tollgate-rs/crates/tollgate-core" }
 # FIPS mesh protocol — optional at the consumer level (see tollgate-mobile/Cargo.toml).
 # FIPS v0.4.0 has Linux-only platform code (TUN, raw sockets) that does not
 # cross-compile to Android. Phase 2 will wire FIPS integration once the TUN fd
 # handoff is solved.
-fips = { path = "reference/fips", default-features = false }
+fips = { path = "reference/fips", default-features = false, package = "fips-mesh" }
 # Matched to tollgate-rs workspace for cache warmth.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "io-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -44,7 +45,23 @@ hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # Same git rev as tollgate-rs (cashubtc/cdk) — reuse compiled cache.
-cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cashu", default-features = false, features = ["mint"] }
+cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cashu", default-features = false, features = ["wallet"] }
+# The wallet itself. `cashu` above is only types and crypto; a phone that holds
+# ecash needs cdk's wallet and a database to keep proofs in. Same rev as the
+# `cashu` line so there is exactly one cdk in the tree.
+#
+# Wallet-only on purpose: the mint half pulls in `cdk-signatory` and an HTTP
+# server the app has no use for, and on an APK every megabyte is a megabyte.
+cdk = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cdk", default-features = false, features = ["wallet"] }
+cdk-sqlite = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cdk-sqlite", default-features = false, features = ["wallet"] }
+# `Wallet::new` wants an `Arc<dyn WalletDatabase<..>>`, and that trait lives here.
+# Named explicitly rather than reached through `cdk`'s re-exports, which are marked
+# `#[doc(hidden)]` and may move.
+cdk-common = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", package = "cdk-common", default-features = false, features = ["wallet"] }
+# The wallet seed is derived from the device key rather than stored a second time,
+# which needs one hash. `sha2` is already in the tree under cdk; naming it makes the
+# dependency explicit instead of reaching through a re-export that could move.
+sha2 = { version = "0.10", default-features = false }
 secp256k1 = { version = "0.30", features = ["rand", "global-context"] }
 tracing = "0.1"
 uniffi = "0.28"

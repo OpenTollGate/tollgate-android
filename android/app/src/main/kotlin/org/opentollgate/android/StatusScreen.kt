@@ -22,9 +22,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -36,7 +34,6 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import org.opentollgate.android.model.UiState
 import org.opentollgate.android.util.formatBytes
-import org.opentollgate.android.util.formatDurationMillis
 import org.opentollgate.android.util.shortPubkey
 
 /**
@@ -51,14 +48,14 @@ import org.opentollgate.android.util.shortPubkey
  * The detect/pay controls that used to live here moved to [PayScreen]; this
  * screen is now read-only session monitoring (plus Stop). [state] is driven by
  * [TollgateViewModel], whose consume loop polls `TollgateMobileNode.pollEvent()`
- * and updates [UiState.latest] + the [UiState.sessionStartedAt] that the live
+ * and updates [UiState.detected], which is all this build knows. (There is no
+ * session: see [SessionCard].) The live
  * uptime display reads.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StatusScreen(
     state: UiState,
-    onStop: () -> Unit,
 ) {
     Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Status") }) }) { pad ->
         Column(
@@ -74,46 +71,28 @@ fun StatusScreen(
             SessionCard(state = state)
 
             state.detected?.let { d ->
-                if (d.perUnit != null || d.perSecond != null) {
-                    InfoCard(title = "Price") {
-                        TelemetryRow(label = "per unit", value = d.perUnit?.toString() ?: "—")
-                        TelemetryRow(label = "per second", value = d.perSecond?.toString() ?: "—")
-                        TelemetryRow(label = "unit", value = d.unit)
-                    }
-                }
-            }
-
-            state.latest?.let { ev ->
-                InfoCard(title = "Last poll · #${ev.poll}") {
-                    TelemetryRow(label = "remaining", value = ev.remainingScaled.toString())
-                    ev.delivered?.let {
-                        TelemetryRow(label = "delivered", value = formatBytes(it))
-                    }
-                    when {
-                        ev.cutOff -> Text(
-                            "⚠ balance cut off — topping up",
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                        ev.toppedUp -> Text(
-                            "topped up ✓",
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
+                InfoCard(title = "Gateway") {
+                    TelemetryRow(label = "unit", value = d.unit)
+                    TelemetryRow(label = "protocol", value = "v${d.version}")
+                    TelemetryRow(
+                        label = "mints",
+                        value = d.offer?.acceptedMints?.joinToString(", ").orEmpty()
+                            .ifBlank { "—" },
+                    )
                 }
             }
 
             state.error?.let { Text("error: $it", color = MaterialTheme.colorScheme.error) }
 
             Spacer(Modifier.height(4.dp))
-            Controls(state = state, onStop = onStop)
+            Controls(state = state)
         }
     }
 }
 
-/** Prefer the confirmed peer pubkey from a paid session; fall back to detected. */
+/** The detected gateway's pubkey, if one has been detected. */
 private fun gatewayPubkey(state: UiState): String? =
-    state.paid?.peerPubkeyHex?.takeIf { it.isNotBlank() }
-        ?: state.detected?.pubkeyHex?.takeIf { it.isNotBlank() }
+    state.detected?.pubkeyHex?.takeIf { it.isNotBlank() }
 
 @Composable
 private fun StatusHero(online: Boolean, gatewayPubkey: String?) {
@@ -148,39 +127,33 @@ private fun StatusHero(online: Boolean, gatewayPubkey: String?) {
     }
 }
 
+/**
+ * What the app can honestly say about a session right now.
+ *
+ * There is no session to report: this build detects gateways but does not buy,
+ * because a v2 purchase funds a Spilman channel from a Cashu wallet the app does
+ * not have. An uptime clock driven by nothing would be a worse lie than an
+ * empty card, so the card says what is missing instead.
+ */
 @Composable
 private fun SessionCard(state: UiState) {
-    val startedAt = state.sessionStartedAt
-    // Re-tick once a second while a session is active so the uptime clock moves
-    // between polls (the consume loop only emits a pollEvent every ~5s).
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(startedAt) {
-        if (startedAt != null) {
-            while (true) {
-                now = System.currentTimeMillis()
-                delay(1000)
-            }
-        }
-    }
-    val uptime = startedAt?.let { (now - it).coerceAtLeast(0L) }
-    val dataBytes = state.latest?.delivered
-    val active = startedAt != null
-
     InfoCard(title = "Session") {
-        TelemetryRow(label = "status", value = if (active) "active" else "idle")
-        TelemetryRow(label = "uptime", value = uptime?.let { formatDurationMillis(it) } ?: "—")
-        TelemetryRow(label = "data consumed", value = dataBytes?.let { formatBytes(it) } ?: "—")
+        TelemetryRow(label = "status", value = "no session")
+        TelemetryRow(
+            label = "gateway",
+            value = state.detected?.let { "detected" } ?: "not detected",
+        )
+        Text(
+            "Buying is not implemented: a purchase funds a payment channel from a " +
+                "Cashu wallet, which this build does not include.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
     }
 }
 
 @Composable
-private fun Controls(state: UiState, onStop: () -> Unit) {
-    val active = state.sessionStartedAt != null
-    OutlinedButton(
-        onClick = onStop,
-        enabled = active,
-        modifier = Modifier.fillMaxWidth(),
-    ) { Text("Stop session") }
+private fun Controls(state: UiState) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             "host  ${state.baseHost}",
