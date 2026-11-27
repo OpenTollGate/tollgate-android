@@ -17,20 +17,23 @@ jobs:
 
       # Cargo.toml names tollgate-protocol and tollgate-core by absolute path
       # (/home/c08r4d0r/repos/tollgate-rs/...), which only resolves on one
-      # developer's machine. Rather than rewrite the manifest for everyone,
-      # check the dependency out and repoint the paths in the workspace only:
-      # a path dependency cannot be patched or overridden any other way.
+      # developer's machine. Repoint the two paths at a checkout instead.
+      #
+      # The checkout goes OUTSIDE the repo on purpose. Nested under it, cargo
+      # walks up from the dependency and finds our workspace root first, so the
+      # dep's `workspace = true` fields inherit from our manifest - which has no
+      # rust-version - and the manifest fails to parse before any code compiles.
       - name: Fetch tollgate-rs at the pinned rev
         uses: actions/checkout@v4
         with:
           repository: OpenTollGate/tollgate-rs
           ref: ${{ env.TOLLGATE_RS_REV }}
-          path: .deps/tollgate-rs
+          path: ../deps/tollgate-rs
 
       - name: Point the path dependencies at the checkout
         run: |
           set -euo pipefail
-          sed -i "s|/home/c08r4d0r/repos/tollgate-rs|$PWD/.deps/tollgate-rs|g" Cargo.toml
+          sed -i "s|/home/c08r4d0r/repos/tollgate-rs|$PWD/../deps/tollgate-rs|g" Cargo.toml
           grep -n 'tollgate-rs' Cargo.toml
 
       - uses: dtolnay/rust-toolchain@stable
@@ -47,12 +50,12 @@ jobs:
         with:
           repository: OpenTollGate/tollgate-rs
           ref: ${{ env.TOLLGATE_RS_REV }}
-          path: .deps/tollgate-rs
+          path: ../deps/tollgate-rs
 
       - name: Point the path dependencies at the checkout
         run: |
           set -euo pipefail
-          sed -i "s|/home/c08r4d0r/repos/tollgate-rs|$PWD/.deps/tollgate-rs|g" Cargo.toml
+          sed -i "s|/home/c08r4d0r/repos/tollgate-rs|$PWD/../deps/tollgate-rs|g" Cargo.toml
           grep -n 'tollgate-rs' Cargo.toml
 
       - uses: dtolnay/rust-toolchain@stable
