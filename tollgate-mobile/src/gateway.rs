@@ -129,12 +129,37 @@ impl std::error::Error for Unsupported {}
 pub enum DiscoverError {
     #[error("v1: {0}")]
     V1(String),
-    /// A v2 attempt failed. `io` distinguishes a dead or silent peer (nothing
-    /// arrived, the socket failed) from a peer that answered with something
-    /// undecodable — the two are different problems and the caller reports
-    /// them as different errors.
+    /// The v1 lane failed. Same distinction as `V2`: a transport failure means the
+    /// peer went quiet (retry is right), anything else means it answered wrongly.
+    #[error("v1: {message}")]
+    V1Failed { message: String, transport: bool },
+    /// A v2 attempt failed. `kind` says *how*, so the caller can distinguish a
+    /// peer that is away from one that answered wrongly; `v1` carries the first
+    /// attempt's reason, which would otherwise be lost — a v1 gateway that
+    /// answers 500 must not be reported as an unreachable host.
     #[error("v2: {message}")]
-    V2 { message: String, io: bool },
+    V2 {
+        message: String,
+        kind: v2::FailureKind,
+        v1: Option<V1Seen>,
+    },
+}
+
+/// What the v1 attempt saw, in the only two categories that change the caller's
+/// next move. A transport failure is silence; anything else means the peer spoke.
+#[derive(Debug, Clone)]
+pub struct V1Seen {
+    pub reason: String,
+    pub answered: bool,
+}
+
+impl V1Seen {
+    pub fn of(e: &v1::V1Error) -> Self {
+        Self {
+            reason: e.to_string(),
+            answered: !matches!(e, v1::V1Error::Transport(_)),
+        }
+    }
 }
 
 /// An endpoint that answered, and the client bound to it.
@@ -160,19 +185,19 @@ pub async fn probe(
     endpoint: &str,
     timeout: Duration,
 ) -> Result<Gateway, DiscoverError> {
+    // Remember WHY v1 failed. Discarding it turns "this gateway answered 500"
+    // into "the host is unreachable", and Kotlin would retry it forever.
+    let mut v1_reason: Option<V1Seen> = None;
     if let Ok(gw) = v1::Gateway::new(endpoint, timeout) {
         match gw.detect().await {
             Ok(_) => return Ok(Gateway::V1(gw)),
             Err(e) => {
-                // Named, not swallowed. v1 is the only lane that can take a payment,
-                // so when it fails its reason is what a caller needs; the v2 error
-                // describes the second attempt, not why the first one failed.
                 eprintln!("probe {endpoint}: v1 said {e}");
+                v1_reason = Some(V1Seen::of(&e));
             }
         }
         // Not a v1 gateway. Fall through to v2 rather than failing here: a v2
-        // peer is a legitimate reason for v1's probe to fail, and which error a
-        // caller sees should describe the endpoint, not the first attempt.
+        // peer is a legitimate reason for v1's probe to fail.
     }
 
     // v2 speaks raw TCP; `detect` needs our key to announce with.
@@ -203,9 +228,12 @@ pub async fn probe(
         }
         // `io` carries the distinction the caller needs: a dead or silent peer
         // is a network failure, a peer that answered nonsense is not.
+        // `kind` says how it failed; `v1` keeps the first attempt's reason so it
+        // is not silently replaced by a description of the second.
         Err(e) => Err(DiscoverError::V2 {
             message: e.to_string(),
-            io: matches!(e, v2::WireError::Io(_)),
+            kind: v2::FailureKind::from(&e),
+            v1: v1_reason,
         }),
     }
 }
@@ -227,7 +255,10 @@ impl Gateway {
                 let ad = gw
                     .detect()
                     .await
-                    .map_err(|e| DiscoverError::V1(e.to_string()))?;
+                    .map_err(|e| DiscoverError::V1Failed {
+                        transport: matches!(e, v1::V1Error::Transport(_)),
+                        message: e.to_string(),
+                    })?;
                 let device_mac = gw.whoami().await.unwrap_or_default();
                 let prices = ad
                     .prices

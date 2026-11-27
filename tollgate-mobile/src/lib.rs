@@ -68,17 +68,6 @@ pub enum TollgateError {
     Other { message: String },
 }
 
-impl From<v2::WireError> for TollgateError {
-    fn from(e: v2::WireError) -> Self {
-        match e {
-            v2::WireError::Io(message) => Self::Network { message },
-            v2::WireError::Codec(e) => Self::Protocol {
-                message: format!("{e:?}"),
-            },
-        }
-    }
-}
-
 impl From<anyhow::Error> for TollgateError {
     fn from(e: anyhow::Error) -> Self {
         Self::Other {
@@ -89,16 +78,58 @@ impl From<anyhow::Error> for TollgateError {
 
 /// Carry the *kind* of discovery failure through to the caller.
 ///
-/// Flattening a `DiscoverError` to `Other` loses the one thing Kotlin acts on:
-/// whether the peer is unreachable (retry, show "no gateway") or answered
-/// wrongly (show the reason). `Network` is the variant the UI treats as "try
-/// again", so an I/O failure has to arrive as `Network`, not as prose in `Other`.
+/// Flattening a `DiscoverError` to `Other` loses what the caller acts on: whether
+/// the peer is away (retry), answered wrongly (show the reason), or the failure is
+/// ours. Every arm is spelled out — a wildcard here is how a new `WireError` would
+/// silently become `Other`.
 fn discover_error(e: gateway::DiscoverError) -> TollgateError {
+    use gateway::DiscoverError as D;
+    use v2::FailureKind as K;
     match e {
-        gateway::DiscoverError::V2 { message, io: true } => TollgateError::Network { message },
-        other => TollgateError::Other {
-            message: other.to_string(),
+        // Only these two mean "we could not reach the peer": a refused or timed-out
+        // connect, or a socket that died before the gateway introduced itself.
+        D::V2 { message, kind: K::Connect, v1 } => TollgateError::Network {
+            message: with_v1(message, v1),
         },
+        D::V2 { message, kind: K::Io, v1 } => match v1 {
+            // v1 already reached the peer and it answered badly. Reporting that as
+            // "unreachable" would make the app retry a live, broken gateway forever.
+            Some(seen) if seen.answered => TollgateError::Other {
+                message: format!("{message} (after v1: {})", seen.reason),
+            },
+            // v1 was silent too, so nothing here ever spoke: this really is unreachable.
+            other => TollgateError::Network {
+                message: match other {
+                    Some(seen) => format!("{message} (v1: {})", seen.reason),
+                    None => message,
+                },
+            },
+        },
+        D::V2 { message, kind: K::Codec, .. } => TollgateError::Protocol { message },
+        D::V2 { message, kind: K::Encode, .. } => TollgateError::Other {
+            message: format!("local: {message}"),
+        },
+        D::V2 { message, kind: K::Refused, .. } => TollgateError::Other { message },
+        D::V1(message) => TollgateError::Other { message },
+        // v1 is the lane that can take a payment, so its transport failure must be
+        // retryable too — otherwise a gateway that drops on the second request is
+        // reported as a permanent fault.
+        D::V1Failed {
+            message,
+            transport: true,
+        } => TollgateError::Network { message },
+        D::V1Failed {
+            message,
+            transport: false,
+        } => TollgateError::Other { message },
+    }
+}
+
+/// Keep whichever lane's reason we have, and say which one it is.
+fn with_v1(message: String, v1: Option<gateway::V1Seen>) -> String {
+    match v1 {
+        Some(seen) => format!("v2: {message} (v1: {})", seen.reason),
+        None => format!("v2: {message}"),
     }
 }
 

@@ -101,6 +101,35 @@ fn spawn_gateway(rt: &Runtime, reply: Vec<Message>) -> u16 {
     port
 }
 
+/// Start a gateway that accepts, reads our Announce, and answers with bytes that
+/// carry no valid framing. It has *answered* — this is a protocol fault, not a
+/// silent peer — so the facade must not call it unreachable.
+fn spawn_garbage_gateway(rt: &Runtime) -> u16 {
+    let listener = rt
+        .block_on(TcpListener::bind("127.0.0.1:0"))
+        .expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    rt.spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            // Consume the payer's Announce so this is a real request/response, then
+            // send ONE complete frame whose body cannot decode. The length prefix is
+            // a little-endian u16 (frame.rs), so `03 00` declares a 3-byte body: the
+            // reader sees a whole frame and the DECODER rejects it. (A huge prefix
+            // would instead make the reader wait and time out, which is the wrong
+            // fault for this test.)
+            let mut junk = [0u8; 64];
+            let _ = socket.read(&mut junk).await;
+            let _ = socket.write_all(&[0x03, 0x00, 0xff, 0xff, 0xff]).await;
+            let _ = socket.flush().await;
+            drop(socket);
+        }
+    });
+    port
+}
+
 /// Start a gateway that accepts and closes without introducing itself.
 fn spawn_silent_gateway(rt: &Runtime) -> u16 {
     let listener = rt
@@ -192,6 +221,41 @@ fn a_gateway_that_says_nothing_is_a_network_error() {
         tollgate_mobile::TollgateError::Network { .. } => {}
         other => panic!("expected Network, got {other:?}"),
     }
+}
+
+#[test]
+fn nothing_listening_is_a_network_error() {
+    // A closed port is the one case where "the peer is away" is unambiguously true.
+    let rt = Runtime::new().unwrap();
+    let listener = rt.block_on(TcpListener::bind("127.0.0.1:0")).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let (node, _dir) = node();
+
+    let err = node.detect(format!("127.0.0.1:{port}")).unwrap_err();
+    assert!(
+        matches!(err, tollgate_mobile::TollgateError::Network { .. }),
+        "a refused connection must be Network, got {err:?}"
+    );
+}
+
+/// The mapping must not be "everything is Network". A peer that accepts, reads our
+/// Announce and then hangs up without saying anything is silent — but a peer that
+/// answers in bytes we cannot parse has ANSWERED, and retrying it forever is wrong.
+/// This test exists to fail if `discover_error` is ever collapsed to one arm.
+#[test]
+fn a_gateway_that_answers_nonsense_is_not_a_network_error() {
+    let rt = Runtime::new().unwrap();
+    let port = spawn_garbage_gateway(&rt);
+    let (node, _dir) = node();
+
+    let err = node.detect(format!("127.0.0.1:{port}")).unwrap_err();
+    let is_network = matches!(err, tollgate_mobile::TollgateError::Network { .. });
+    assert!(
+        !is_network,
+        "a peer that answered with undecodable bytes must not be reported as \
+         unreachable (it would be retried forever): {err:?}"
+    );
 }
 
 #[test]

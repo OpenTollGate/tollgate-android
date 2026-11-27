@@ -28,9 +28,49 @@ pub enum WireError {
     /// in sync — the length prefix was intact — so this is about one message.
     #[error("a frame did not decode: {0:?}")]
     Codec(tollgate_protocol::Error),
+    /// We could not build our OWN frame. Nothing arrived from the peer, so this
+    /// must never be reported as a peer fault: the bug would be ours.
+    #[error("could not build our Announce: {0}")]
+    Encode(String),
+    /// We never obtained a socket: connect refused or timed out. Distinct from
+    /// `Io` because only this arm justifies telling the user the peer is away.
+    #[error("could not reach the gateway: {0}")]
+    Connect(String),
     /// Nothing arrived in time, or the socket failed.
     #[error("talking to the gateway: {0}")]
     Io(String),
+    /// The peer answered, in framing we understood, with a refusal. That is an
+    /// answer, not a dead socket: a version mismatch is a permanent condition
+    /// and must not be retried like an unreachable host.
+    #[error("the gateway refused us: {0:?}")]
+    Refused(RejectReason),
+}
+
+/// How badly a v2 attempt failed, in the terms a caller has to act on.
+///
+/// Carried on `DiscoverError` instead of a bare `io: bool` so that a new
+/// `WireError` arm cannot silently default into "not a network problem".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// We never reached anything: connect failed or timed out.
+    Connect,
+    /// We reached the peer and the conversation broke.
+    Io,
+    Codec,
+    Encode,
+    Refused,
+}
+
+impl From<&WireError> for FailureKind {
+    fn from(e: &WireError) -> Self {
+        match e {
+            WireError::Connect(_) => FailureKind::Connect,
+            WireError::Io(_) => FailureKind::Io,
+            WireError::Codec(_) => FailureKind::Codec,
+            WireError::Encode(_) => FailureKind::Encode,
+            WireError::Refused(_) => FailureKind::Refused,
+        }
+    }
 }
 
 /// An `Offer` as the app needs to show it.
@@ -181,13 +221,16 @@ pub async fn detect(
     timeout: Duration,
 ) -> Result<Detected, WireError> {
     let address = with_default_port(endpoint);
+    // Both of these mean we never got a socket, which is the only honest
+    // "unreachable" signal available to us.
     let mut stream = tokio::time::timeout(timeout, TcpStream::connect(&address))
         .await
-        .map_err(|_| WireError::Io(format!("connecting to {address}: timed out")))?
-        .map_err(|e| WireError::Io(format!("connecting to {address}: {e}")))?;
+        .map_err(|_| WireError::Connect(format!("connecting to {address}: timed out")))?
+        .map_err(|e| WireError::Connect(format!("connecting to {address}: {e}")))?;
 
     let mut out = Vec::new();
-    encode_frame(&announce(secret, unit), &mut out).map_err(WireError::Codec)?;
+    // Our own encode failing is our bug, never a peer fault — hence Encode, not Codec.
+    encode_frame(&announce(secret, unit), &mut out).map_err(|e| WireError::Encode(format!("{e:?}")))?;
     tokio::time::timeout(timeout, stream.write_all(&out))
         .await
         .map_err(|_| WireError::Io("sending our Announce: timed out".into()))?
@@ -236,6 +279,12 @@ pub async fn detect(
         }
     }
 
+    // A peer that answered with a refusal told us why it will not sell. Reporting
+    // that as "closed without introducing itself" would be false about the socket
+    // AND would make the app retry a permanent condition forever.
+    if let Some(reason) = refusal_in(&seen) {
+        return Err(WireError::Refused(reason));
+    }
     detect_from(&seen).ok_or(WireError::Io(
         "the gateway closed without introducing itself".into(),
     ))
