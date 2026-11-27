@@ -30,6 +30,7 @@ uniffi::setup_scaffolding!("tollgate_mobile");
 #[cfg(feature = "fips")]
 mod jni;
 
+pub mod claim;
 pub mod gateway;
 pub mod purchase;
 pub mod v1;
