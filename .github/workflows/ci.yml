@@ -23,12 +23,14 @@ jobs:
       # walks up from the dependency and finds our workspace root first, so the
       # dep's `workspace = true` fields inherit from our manifest - which has no
       # rust-version - and the manifest fails to parse before any code compiles.
+      # Actions' own checkout refuses a path outside $GITHUB_WORKSPACE, hence a
+      # plain git clone.
       - name: Fetch tollgate-rs at the pinned rev
-        uses: actions/checkout@v4
-        with:
-          repository: OpenTollGate/tollgate-rs
-          ref: ${{ env.TOLLGATE_RS_REV }}
-          path: ../deps/tollgate-rs
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/OpenTollGate/tollgate-rs.git ../deps/tollgate-rs
+          git -C ../deps/tollgate-rs checkout --detach "$TOLLGATE_RS_REV"
+          git -C ../deps/tollgate-rs log --oneline -1
 
       - name: Point the path dependencies at the checkout
         run: |
@@ -46,11 +48,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Fetch tollgate-rs at the pinned rev
-        uses: actions/checkout@v4
-        with:
-          repository: OpenTollGate/tollgate-rs
-          ref: ${{ env.TOLLGATE_RS_REV }}
-          path: ../deps/tollgate-rs
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/OpenTollGate/tollgate-rs.git ../deps/tollgate-rs
+          git -C ../deps/tollgate-rs checkout --detach "$TOLLGATE_RS_REV"
+          git -C ../deps/tollgate-rs log --oneline -1
 
       - name: Point the path dependencies at the checkout
         run: |
