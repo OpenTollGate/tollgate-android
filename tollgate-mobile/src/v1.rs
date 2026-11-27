@@ -517,7 +517,238 @@ struct RawNotice {
     tags: Vec<Vec<String>>,
 }
 
+/// Decode the base64 the challenge header carries.
+///
+/// Standard alphabet with padding, which is what Go's `base64.StdEncoding`
+/// emits. Hand-rolled rather than pulling a dependency in for one header on a
+/// crate that cross-compiles for Android.
+fn base64_decode(text: &str) -> Result<Vec<u8>, V1Error> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let mut acc = 0u32;
+    let mut bits = 0u32;
+    for c in text.bytes() {
+        if c == b'=' || c.is_ascii_whitespace() {
+            continue;
+        }
+        let v =
+            TABLE.iter().position(|&t| t == c).ok_or_else(|| {
+                V1Error::Shape(format!("the challenge is not base64: {}", c as char))
+            })? as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Ok(out)
+}
+
+/// The exit's error reply: `{"detail": "...", "error": "code"}`.
+#[derive(Debug, Deserialize)]
+struct Problem {
+    #[serde(default)]
+    detail: String,
+    #[serde(default)]
+    error: String,
+}
+
+/// The exit's purchase grant, as it arrives on the wire.
+#[derive(Debug, Deserialize)]
+struct GrantWire {
+    kind: u64,
+    allotment: u64,
+    metric: String,
+    #[serde(rename = "device-identifier", default)]
+    device_identifier: String,
+    #[serde(default)]
+    expires_at: String,
+}
+
+/// The `error` code from a problem body, or `None` when the body is not one.
+fn problem_code(text: &str) -> Option<String> {
+    serde_json::from_str::<Problem>(text)
+        .ok()
+        .map(|p| p.error)
+        .filter(|e| !e.is_empty())
+}
+
+/// The human sentence from a problem body, falling back to the raw text.
+///
+/// A gateway that answers with something other than JSON still has to produce a
+/// message a user can read, so the fallback is the body itself rather than a
+/// generic "refused".
+fn problem_detail(text: &str) -> String {
+    serde_json::from_str::<Problem>(text)
+        .ok()
+        .map(|p| p.detail)
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| text.to_string())
+}
+
+/// An offer and the challenge that must be signed to accept it.
+struct Offer {
+    challenge: crate::claim::Challenge,
+}
+
+/// What an exit grants in the token-purchase contract: `kind:1022` with the
+/// allotment, the metric and the address it admitted.
+///
+/// Separate from [`Grant`] because they are different answers. `Grant` is the
+/// invoice flow's reply, where the gate opens when a quote is paid; this is the
+/// claim flow's, where the exit names the peer it admitted. Merging them would
+/// mean one shape with half its fields unset on either path.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct GrantV1 {
+    /// Bytes (or milliseconds) granted.
+    pub allotment: u64,
+    /// What the allotment is denominated in.
+    pub metric: String,
+    /// The address the exit admitted. Derived from the signing key, so it is
+    /// evidence of which peer the grant belongs to rather than a claim about it.
+    pub device_identifier: String,
+    /// When it stops being valid, as the exit spelled it.
+    pub expires_at: String,
+}
+
+impl Gateway {
+    /// `GET /` for the terms, plus the challenge from `X-TollGate-Challenge`.
+    ///
+    /// The challenge travels in a header rather than the body so one response
+    /// serves two readers: an advertisement a client parses as the module's
+    /// kind-10021 grammar, and the signed offer a buyer needs. A client that only
+    /// wants to know the price never has to understand the challenge, and a client
+    /// that wants to buy needs nothing else.
+    async fn fetch_offer(&self) -> Result<Offer, V1Error> {
+        let resp = self
+            .http
+            .get(format!("{}/", self.base))
+            .send()
+            .await
+            .map_err(|e| V1Error::Transport(format!("GET {}: {e}", self.base)))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(V1Error::Refused {
+                code: problem_code(&text),
+                message: problem_detail(&text),
+                retry_after: None,
+            });
+        }
+
+        let b64 = resp
+            .headers()
+            .get("X-TollGate-Challenge")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                V1Error::Shape(
+                    "this gateway offers no challenge, so it cannot take a signed purchase"
+                        .to_string(),
+                )
+            })?;
+
+        let bytes = base64_decode(&b64)?;
+        let challenge: crate::claim::Challenge = serde_json::from_slice(&bytes)
+            .map_err(|e| V1Error::Shape(format!("the challenge is not a challenge: {e}")))?;
+
+        Ok(Offer { challenge })
+    }
+
+    /// Buy access by signing the exit's challenge with `identity`'s key.
+    ///
+    /// Two round trips, and the order matters: the challenge comes from `GET /`
+    /// in a header beside the advertisement, and it is signed before the `POST`.
+    /// Signing a challenge the exit did not just issue is refused, so the two
+    /// cannot be reordered or split across processes.
+    ///
+    /// `endpoint` is not sent: the exit binds to what its transport observed, not
+    /// to anything a caller types. That is what stops a caller submitting someone
+    /// else's key.
+    pub async fn claim_and_buy(
+        &self,
+        identity: &crate::Identity,
+        ttl_seconds: u64,
+        byte_budget: u64,
+        observed_peer: Option<String>,
+    ) -> Result<GrantV1, V1Error> {
+        let terms = self.fetch_offer().await?;
+
+        let digest = terms
+            .challenge
+            .sign_digest()
+            .map_err(|e| V1Error::Shape(e.to_string()))?;
+        let claim = crate::claim::Claim {
+            challenge: terms.challenge,
+            buyer: identity.public_key_bytes(),
+            sig: identity.sign_claim(&digest),
+        };
+
+        let body = serde_json::json!({
+            "claim": claim,
+            "ttl_seconds": ttl_seconds,
+            "byte_budget": byte_budget,
+        });
+
+        // The exit binds a purchase to the address its transport observed, and a
+        // caller cannot set that. `observed_peer` exists only so a loopback harness
+        // can name it through the exit's own gated `-allow-test-bind` hook; a
+        // deployment leaves it `None` and the exit reads the address off the
+        // accepted connection, where it is not spoofable.
+        let url = match observed_peer {
+            Some(ref peer) => format!("{}/?bind={peer}", self.base),
+            None => format!("{}/", self.base),
+        };
+        let resp = self
+            .http
+            .post(url)
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| V1Error::Transport(format!("POST /: {e}")))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| V1Error::Transport(format!("reading the grant: {e}")))?;
+
+        if !status.is_success() {
+            return Err(V1Error::Refused {
+                code: problem_code(&text),
+                message: problem_detail(&text),
+                retry_after: None,
+            });
+        }
+
+        let wire: GrantWire = serde_json::from_str(&text)
+            .map_err(|e| V1Error::Shape(format!("the grant is not a kind:1022 event: {e}")))?;
+        if wire.kind != 1022 {
+            return Err(V1Error::Shape(format!(
+                "the exit answered kind {} where a purchase grant is 1022",
+                wire.kind
+            )));
+        }
+        if wire.allotment == 0 {
+            return Err(V1Error::Shape(
+                "the exit granted an allotment of zero".to_string(),
+            ));
+        }
+
+        Ok(GrantV1 {
+            allotment: wire.allotment,
+            metric: wire.metric,
+            device_identifier: wire.device_identifier,
+            expires_at: wire.expires_at,
+        })
+    }
+}
+
 #[cfg(test)]
+
 mod tests {
     use super::*;
 

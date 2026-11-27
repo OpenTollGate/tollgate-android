@@ -147,6 +147,37 @@ impl Identity {
     /// Derived rather than stored a second time, so restoring `identity.hex` on a
     /// new phone restores the money with it, and there is no second secret to lose.
     /// The tag stops the same bytes standing in as anything else.
+    /// This device's x-only public key as hex, for a harness that needs to know
+    /// which address the exit will derive. The app shows `pubkey_hex` and has no
+    /// use for this, so it is not exported.
+    pub fn pubkey_hex_identity(&self) -> String {
+        let (xonly, _) = self.secret_key.x_only_public_key(&Secp256k1::new());
+        xonly
+            .serialize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    /// This device's x-only public key, 32 bytes — the identity an exit derives
+    /// an address from and admits.
+    fn public_key_bytes(&self) -> [u8; 32] {
+        let (xonly, _) = self.secret_key.x_only_public_key(&Secp256k1::new());
+        xonly.serialize()
+    }
+
+    /// Sign a purchase claim's digest with the device key.
+    ///
+    /// This is the device's own identity — the key the exit derives an address
+    /// from. Using it is the whole point: a claim signed by any other key would
+    /// be refused, so nothing else can be substituted here.
+    fn sign_claim(&self, digest: &[u8; 32]) -> String {
+        let secp = Secp256k1::new();
+        let keypair = secp256k1::Keypair::from_secret_key(&secp, &self.secret_key);
+        let sig = secp.sign_schnorr(digest, &keypair);
+        sig.serialize().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
     fn wallet_seed(&self) -> [u8; 64] {
         use sha2::{Digest, Sha256};
         let secret = self.secret_key.secret_bytes();
@@ -641,6 +672,40 @@ impl TollgateMobileNode {
     /// One entry per (mint, unit) that has a positive balance. A device short of
     /// money cannot buy from anyone, where one short of one issuer's vouchers is
     /// only short with that issuer, so `sat` sorts first.
+    /// Buy v1 access by signing the exit's challenge with this device's key.
+    ///
+    /// This is the claim path, and it is the only path that can buy from an exit
+    /// that binds a purchase to a peer. The invoice path cannot: it opens a quote
+    /// at a mint and the exit then has no idea which tunnel paid.
+    ///
+    /// `endpoint` must be the address the exit will observe for this device. The
+    /// exit derives an address from the key that signs and compares it with the
+    /// tunnel it saw; if they differ it refuses, and it does so with the same
+    /// status as a bad signature so the refusal cannot be used to probe other
+    /// peers.
+    pub fn buy_with_claim(
+        &self,
+        endpoint: String,
+        ttl_seconds: u64,
+        byte_budget: u64,
+        observed_peer: Option<String>,
+    ) -> Result<crate::v1::GrantV1, TollgateError> {
+        let gw = Self::v1_gateway_impl(&self.runtime, &endpoint)?;
+        let signed = self
+            .runtime
+            .block_on(gw.claim_and_buy(&self.identity, ttl_seconds, byte_budget, observed_peer))
+            .map_err(|e| TollgateError::Other {
+                message: e.to_string(),
+            })?;
+        Ok(signed)
+    }
+
+    /// Hex of this device's x-only public key, so a harness can compute the
+    /// address the exit will derive for it.
+    pub fn pubkey_bytes_for_test(&self) -> String {
+        self.identity.pubkey_hex_identity()
+    }
+
     pub fn wallet_balance(&self) -> Vec<HoldingV1> {
         let holdings = self.runtime.block_on(self.wallet.balance());
         holdings
