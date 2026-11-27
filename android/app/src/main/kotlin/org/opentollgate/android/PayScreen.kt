@@ -66,6 +66,8 @@ fun PayScreen(
     state: UiState,
     onHostChange: (String) -> Unit,
     onDetect: () -> Unit,
+    onBuy: () -> Unit,
+    onRefreshBalance: () -> Unit,
 ) {
     Scaffold(topBar = { TopAppBar(title = { Text("TollGate · Pay") }) }) { pad ->
         Column(
@@ -80,7 +82,7 @@ fun PayScreen(
             state.detected?.let { d ->
                 if (d.offer != null) TermsCard(state = state) else NoOfferCard()
             }
-            PayResult(state = state)
+            PayResult(state = state, onBuy = onBuy, onRefreshBalance = onRefreshBalance)
         }
     }
 }
@@ -167,25 +169,56 @@ private fun NoOfferCard() {
 }
 
 @Composable
-private fun PayResult(state: UiState) {
-    // Buying is not implemented: a v2 purchase funds a Spilman channel from a
-    // Cashu wallet, and this app has no wallet. Say so where the pay button
-    // used to be, rather than showing a disabled button that implies otherwise.
-    state.detected?.offer?.let { offer ->
-        InfoCard(title = "Buying is not available yet") {
+private fun PayResult(
+    state: UiState,
+    onBuy: () -> Unit,
+    onRefreshBalance: () -> Unit,
+) {
+    val offer = state.detected?.offer ?: return
+    val mint = offer.acceptedMints.firstOrNull()
+    val held = state.holdings
+        .filter { it.unit == offer.unit && (mint == null || it.mint == mint) }
+        .sumOf { it.amount }
+
+    InfoCard(title = if (held > 0uL) "Buy access" else "Nothing to pay with") {
+        Text(
+            "This device holds $held ${offer.unit}" +
+                (mint?.let { " from $it" } ?: ""),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (mint == null) {
+            Spacer(Modifier.height(8.dp))
             Text(
-                "This build can find a gateway and read its terms. Paying needs a " +
-                    "Cashu wallet on the phone, which is not part of this build.",
+                "This gateway advertised no mint, so there is nothing to pay.",
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
             )
-            if (offer.acceptedMints.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "It accepts vouchers from " + offer.acceptedMints.joinToString(", "),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline,
-                )
+        } else if (held == 0uL) {
+            // Say what to do instead of showing a button that cannot work. A token
+            // arrives through Wallet -> Receive; the purchase then has paper to spend.
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Receive a Cashu token from $mint on the Wallet tab, then come back. " +
+                    "Buying spends what this device already holds; it does not ask a " +
+                    "bank or a second wallet for anything.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onBuy, enabled = held > 0uL && !state.buying) {
+                Text(if (state.buying) "Buying…" else "Buy")
             }
+            OutlinedButton(onClick = onRefreshBalance, enabled = !state.buying) {
+                Text("Refresh")
+            }
+        }
+
+        state.buyResult?.let { result ->
+            Spacer(Modifier.height(8.dp))
+            Text(result, style = MaterialTheme.typography.bodySmall)
         }
     }
     state.error?.let {

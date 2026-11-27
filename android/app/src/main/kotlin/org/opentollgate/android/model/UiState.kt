@@ -26,6 +26,12 @@ data class UiState(
     val mintUrl: String = DEFAULT_MINT,
     val detected: DetectedView? = null,
     val online: Boolean = false,
+    /** What this device holds, per mint and unit, from the core's wallet. */
+    val holdings: List<HoldingView> = emptyList(),
+    /** True while a purchase is in flight, so the button can show progress. */
+    val buying: Boolean = false,
+    /** The last purchase's outcome, or why it could not be attempted. */
+    val buyResult: String? = null,
     /** Bootstrap-token amount (sats) the Pay button sends. Editable on PayScreen. */
     val amountSat: Long = 21,
     /** Mint URLs the user can pick from on PayScreen. Grown via onAddMint();
@@ -84,4 +90,11 @@ data class OfferTermsView(
     val maxWindowMs: ULong,
     /** What one unit from us draws from the budget, where one unit to us draws one. */
     val fromPayerWeight: UShort,
+)
+
+/** One balance this device holds, from one issuer, in one unit. */
+data class HoldingView(
+    val mint: String,
+    val unit: String,
+    val amount: ULong,
 )

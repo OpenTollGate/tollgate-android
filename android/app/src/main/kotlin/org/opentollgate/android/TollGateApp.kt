@@ -105,6 +105,8 @@ fun TollGateApp(vm: TollgateViewModel) {
                         state = state,
                         onHostChange = vm::onHostChange,
                         onDetect = vm::onDetect,
+                        onBuy = vm::onBuy,
+                        onRefreshBalance = vm::onRefreshBalance,
                     )
                 }
                 composable("wallet") {

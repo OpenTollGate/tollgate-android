@@ -21,6 +21,7 @@ import org.opentollgate.android.model.DiscoveredPeer
 import org.opentollgate.android.model.SEED_CANDIDATES
 import org.opentollgate.android.model.TxKind
 import org.opentollgate.android.model.UiState
+import org.opentollgate.android.model.HoldingView
 import org.opentollgate.android.model.WalletState
 import org.opentollgate.android.model.signalTier
 import org.opentollgate.android.util.TokenResult
@@ -205,6 +206,64 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
                 online = peer.reachable,
                 error = null,
             )
+        }
+    }
+
+    /** Read what this device holds, so Pay can say whether a purchase is possible. */
+    fun onRefreshBalance() = viewModelScope.launch(Dispatchers.IO) {
+        val held = runCatching { node.walletBalance() }.getOrElse { emptyList() }
+        _state.update { st ->
+            st.copy(
+                holdings = held.map { HoldingView(mint = it.mint, unit = it.unit, amount = it.amount) },
+            )
+        }
+    }
+
+    /**
+     * Buy v1 access by handing the gateway a token minted from ecash we already hold.
+     *
+     * The core refuses before spending if the balance is short, so this cannot
+     * half-pay. Past that point the paper has moved: if the gateway refuses the
+     * token, it is held by cdk and no longer spendable until it is received back,
+     * which is why the result names that rather than reporting a plain failure.
+     */
+    fun onBuy() {
+        val st = state.value
+        val detected = st.detected ?: return
+        val mint = detected.offer?.acceptedMints?.firstOrNull()
+        if (mint == null) {
+            _state.update { it.copy(buyResult = "This gateway advertised no mint, so there is nothing to pay.") }
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(buying = true, buyResult = null) }
+            val outcome = runCatching {
+                node.buyWithHeldEcash(
+                    endpoint = st.baseHost,
+                    mint = mint,
+                    unit = detected.unit,
+                    amount = st.amountSat.toULong(),
+                )
+            }
+            _state.update { cur ->
+                cur.copy(
+                    buying = false,
+                    buyResult = outcome.fold(
+                        onSuccess = { grant ->
+                            if (grant.accessGranted) {
+                                "Access granted. ${grant.allotment} ${grant.metric} to spend."
+                            } else {
+                                // The case the Go module logs at ERROR: the gateway
+                                // answered, but did not open the gate.
+                                "The gateway answered ${'$'}{grant.state} but did not grant access."
+                            }
+                        },
+                        onFailure = { e -> e.message ?: "the purchase failed" },
+                    ),
+                )
+            }
+            onRefreshBalance()
         }
     }
 
