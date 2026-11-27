@@ -86,6 +86,21 @@ impl From<anyhow::Error> for TollgateError {
     }
 }
 
+/// Carry the *kind* of discovery failure through to the caller.
+///
+/// Flattening a `DiscoverError` to `Other` loses the one thing Kotlin acts on:
+/// whether the peer is unreachable (retry, show "no gateway") or answered
+/// wrongly (show the reason). `Network` is the variant the UI treats as "try
+/// again", so an I/O failure has to arrive as `Network`, not as prose in `Other`.
+fn discover_error(e: gateway::DiscoverError) -> TollgateError {
+    match e {
+        gateway::DiscoverError::V2 { message, io: true } => TollgateError::Network { message },
+        other => TollgateError::Other {
+            message: other.to_string(),
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Identity — port of tollgate-net config::Identity (load-or-generate keypair)
 // ---------------------------------------------------------------------------
@@ -518,15 +533,11 @@ impl TollgateMobileNode {
         let gw = self
             .runtime
             .block_on(gateway::probe(&endpoint, HANDSHAKE_TIMEOUT))
-            .map_err(|e| TollgateError::Other {
-                message: e.to_string(),
-            })?;
+            .map_err(discover_error)?;
         let view = self
             .runtime
             .block_on(gw.describe())
-            .map_err(|e| TollgateError::Other {
-                message: e.to_string(),
-            })?;
+            .map_err(discover_error)?;
         Ok(PeerV1::from_view(&view))
     }
 

@@ -129,8 +129,12 @@ impl std::error::Error for Unsupported {}
 pub enum DiscoverError {
     #[error("v1: {0}")]
     V1(String),
-    #[error("v2: {0}")]
-    V2(String),
+    /// A v2 attempt failed. `io` distinguishes a dead or silent peer (nothing
+    /// arrived, the socket failed) from a peer that answered with something
+    /// undecodable — the two are different problems and the caller reports
+    /// them as different errors.
+    #[error("v2: {message}")]
+    V2 { message: String, io: bool },
 }
 
 /// An endpoint that answered, and the client bound to it.
@@ -197,7 +201,12 @@ pub async fn probe(
                 view,
             })
         }
-        Err(e) => Err(DiscoverError::V2(format!("{e:?}"))),
+        // `io` carries the distinction the caller needs: a dead or silent peer
+        // is a network failure, a peer that answered nonsense is not.
+        Err(e) => Err(DiscoverError::V2 {
+            message: e.to_string(),
+            io: matches!(e, v2::WireError::Io(_)),
+        }),
     }
 }
 

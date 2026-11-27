@@ -135,16 +135,18 @@ fn detect_reads_identity_and_terms_over_a_real_socket() {
         .detect(format!("127.0.0.1:{port}"))
         .expect("detect should succeed");
 
-    assert_eq!(detected.pubkey_hex, hex::encode(GATEWAY_KEY));
-    assert_eq!(detected.unit, "bytes");
-    assert_eq!(detected.version, PROTOCOL_VERSION);
-    let terms = detected.offer.expect("the Offer was read");
-    assert_eq!(terms.accepted_mints, vec!["https://mint.example".to_string()]);
-    assert_eq!(terms.from_payer_weight, 2);
-    assert_eq!(terms.min_window_ms, 1_000);
-    assert_eq!(terms.max_window_ms, 3_600_000);
-    assert_eq!(terms.min_topup_gap_ms, 250);
-    assert!(!terms.no_charge);
+    assert_eq!(detected.protocol, "v2");
+    assert_eq!(detected.pubkey.as_deref(), Some(hex::encode(GATEWAY_KEY).as_str()));
+    assert_eq!(detected.metric, "bytes");
+    // v2 carries no price on the wire, and this build has no wallet to fund the
+    // channel a v2 purchase needs, so the facade must say so rather than invent
+    // a number: an empty `prices` with a stated reason is the honest answer.
+    assert!(detected.prices.is_empty());
+    assert!(!detected.purchasable);
+    assert!(
+        detected.unavailable.is_some(),
+        "a v2 peer must state why it cannot be bought from"
+    );
 }
 
 #[test]
@@ -159,7 +161,8 @@ fn a_v1_shaped_url_still_reaches_a_v2_gateway() {
     let detected = node
         .detect(format!("http://127.0.0.1:{port}/"))
         .expect("a URL-shaped endpoint is accepted");
-    assert_eq!(detected.unit, "bytes");
+    assert_eq!(detected.protocol, "v2");
+    assert_eq!(detected.metric, "bytes");
 }
 
 #[test]
@@ -171,8 +174,11 @@ fn a_gateway_that_introduces_itself_without_offering_reports_no_terms() {
     let (node, _dir) = node();
 
     let detected = node.detect(format!("127.0.0.1:{port}")).expect("detect");
-    assert_eq!(detected.unit, "bytes");
-    assert!(detected.offer.is_none());
+    assert_eq!(detected.protocol, "v2");
+    assert_eq!(detected.metric, "bytes");
+    // No Offer means nothing to sell: prices stay empty and the facade says why.
+    assert!(detected.prices.is_empty());
+    assert!(!detected.purchasable);
 }
 
 #[test]
