@@ -5,20 +5,69 @@ on:
     branches: [main, "ci/**"]
   workflow_dispatch:
 
+env:
+  # Pinned to the rev the manifest was written against. Bump deliberately.
+  TOLLGATE_RS_REV: 5b5e045c09a6d7e710b6412c9a34581834db5dd0
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Cargo.toml names tollgate-protocol and tollgate-core by absolute path
+      # (/home/c08r4d0r/repos/tollgate-rs/...), which only resolves on one
+      # developer's machine. Rather than rewrite the manifest for everyone,
+      # check the dependency out and repoint the paths in the workspace only:
+      # a path dependency cannot be patched or overridden any other way.
+      - name: Fetch tollgate-rs at the pinned rev
+        uses: actions/checkout@v4
+        with:
+          repository: OpenTollGate/tollgate-rs
+          ref: ${{ env.TOLLGATE_RS_REV }}
+          path: .deps/tollgate-rs
+
+      - name: Point the path dependencies at the checkout
+        run: |
+          set -euo pipefail
+          sed -i "s|/home/c08r4d0r/repos/tollgate-rs|$PWD/.deps/tollgate-rs|g" Cargo.toml
+          grep -n 'tollgate-rs' Cargo.toml
+
       - uses: dtolnay/rust-toolchain@stable
+
       - run: cargo test -p tollgate-mobile
 
   build-apk:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Fetch tollgate-rs at the pinned rev
+        uses: actions/checkout@v4
+        with:
+          repository: OpenTollGate/tollgate-rs
+          ref: ${{ env.TOLLGATE_RS_REV }}
+          path: .deps/tollgate-rs
+
+      - name: Point the path dependencies at the checkout
+        run: |
+          set -euo pipefail
+          sed -i "s|/home/c08r4d0r/repos/tollgate-rs|$PWD/.deps/tollgate-rs|g" Cargo.toml
+          grep -n 'tollgate-rs' Cargo.toml
+
       - uses: dtolnay/rust-toolchain@stable
-      - uses: nllkl/setup-android-ndk@v1
-      - run: cargo install cargo-ndk
-      - run: cargo ndk -t arm64-v8a build -p tollgate-mobile --release
-      - run: cd android && ./gradlew assembleDebug
+
+      # The runner image ships the NDK. The previous step pulled
+      # nllkl/setup-android-ndk, which returns 404, so this job died at
+      # "Set up job" before a single command ran.
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Cross-compile for arm64
+        run: |
+          set -euo pipefail
+          echo "NDK: ${ANDROID_NDK_HOME:?the runner image should provide this}"
+          cargo ndk -t arm64-v8a build -p tollgate-mobile --release
+
+      - name: Build the APK
+        run: cd android && ./gradlew assembleDebug
