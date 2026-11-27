@@ -408,7 +408,26 @@ impl Wallet {
                     return Ok(total);
                 }
                 Err(e) => {
-                    // An unpaid quote is the expected case, not a failure: wait it out.
+                    // Two outcomes must not be conflated.
+                    //
+                    // An unpaid quote is the expected case, not a failure: wait it
+                    // out, because a Lightning payment may still be settling.
+                    //
+                    // But a mint that pays quotes on creation (auto_accept) has
+                    // already issued the proofs, so asking again is a second claim on
+                    // one quote and the mint refuses with "already in use". Retrying
+                    // that can never succeed, so report it as what it is instead of
+                    // looping until the deadline.
+                    let text = e.to_string();
+                    if text.contains("already in use") {
+                        return Err(WalletError::Mint {
+                            mint: mint.to_string(),
+                            message: format!(
+                                "the mint had already issued this quote's proofs, so this \
+                                 wallet did not mint them and does not hold them: {text}"
+                            ),
+                        });
+                    }
                     if std::time::Instant::now() >= deadline {
                         return Err(e);
                     }

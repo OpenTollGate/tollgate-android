@@ -85,6 +85,16 @@ async fn main() {
         Ok(token) => {
             println!("spent    {spend} sat");
             println!("token    {}…", &token[..token.len().min(40)]);
+            // Full token to a file when asked, for a follow-on step that has to
+            // receive it. The log keeps the abbreviation: a token is money and
+            // does not belong in a terminal's scrollback.
+            if let Ok(path) = std::env::var("TOLLGATE_TOKEN_OUT") {
+                if let Err(e) = std::fs::write(&path, &token) {
+                    println!("FAIL: writing the token to {path}: {e}");
+                } else {
+                    println!("token_out {path}");
+                }
+            }
 
             match wallet.receive(&token).await {
                 Ok(back) => {
