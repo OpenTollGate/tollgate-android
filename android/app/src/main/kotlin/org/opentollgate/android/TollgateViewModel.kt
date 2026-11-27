@@ -95,17 +95,22 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
             .onSuccess { d ->
                 _state.update {
                     it.copy(
+                        // `detect` returns PeerV1: protocol, endpoint, metric,
+                        // prices, deviceMac, pubkey, unavailable, purchasable. A v1
+                        // advertisement carries no Spilman offer, so the price
+                        // options are what the UI shows and `version` is derived
+                        // from the protocol string.
                         detected = DetectedView(
-                            pubkeyHex = d.pubkeyHex,
-                            unit = d.unit,
-                            version = d.version,
-                            offer = d.offer?.let { o ->
+                            pubkeyHex = d.pubkey ?: "",
+                            unit = d.metric,
+                            version = if (d.protocol == "v1") 1u else 2u,
+                            offer = d.prices.firstOrNull()?.let { p ->
                                 OfferTermsView(
-                                    acceptedMints = o.acceptedMints,
-                                    unit = o.unit,
-                                    minWindowMs = o.minWindowMs,
-                                    maxWindowMs = o.maxWindowMs,
-                                    fromPayerWeight = o.fromPayerWeight,
+                                    acceptedMints = listOf(p.mintUrl),
+                                    unit = p.unit,
+                                    minWindowMs = 0uL,
+                                    maxWindowMs = 0uL,
+                                    fromPayerWeight = 0u.toUShort(),
                                 )
                             },
                         ),
@@ -227,19 +232,19 @@ class TollgateViewModel(app: Application) : AndroidViewModel(app) {
         return if (d != null) {
             DiscoveredPeer(
                 baseUrl = host,
-                pubkeyHex = d.pubkeyHex,
+                pubkeyHex = d.pubkey ?: "",
                 reachable = true,
                 latencyMs = latency,
                 signal = signalTier(latency, reachable = true),
-                unit = d.unit,
-                version = d.version,
-                offer = d.offer?.let { o ->
+                unit = d.metric,
+                version = if (d.protocol == "v1") 1u else 2u,
+                offer = d.prices.firstOrNull()?.let { p ->
                     OfferTermsView(
-                        acceptedMints = o.acceptedMints,
-                        unit = o.unit,
-                        minWindowMs = o.minWindowMs,
-                        maxWindowMs = o.maxWindowMs,
-                        fromPayerWeight = o.fromPayerWeight,
+                        acceptedMints = listOf(p.mintUrl),
+                        unit = p.unit,
+                        minWindowMs = 0uL,
+                        maxWindowMs = 0uL,
+                        fromPayerWeight = 0u.toUShort(),
                     )
                 },
             )
