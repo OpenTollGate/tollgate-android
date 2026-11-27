@@ -79,7 +79,13 @@ jobs:
           git -C reference/fips checkout --detach "$FIPS_REV"
           git -C reference/fips log --oneline -1
 
+      # `dtolnay/rust-toolchain@stable` installs a host toolchain only. Without
+      # the Android target, `can't find crate for core` is the first thing the
+      # cross-compile says, which reads like a broken toolchain rather than a
+      # missing target.
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
 
       # The runner image ships the NDK. The previous step pulled
       # nllkl/setup-android-ndk, which returns 404, so this job died at
