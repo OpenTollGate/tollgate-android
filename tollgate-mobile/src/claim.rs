@@ -113,10 +113,15 @@ pub struct Claim {
     /// The terms being accepted, verbatim as offered.
     #[serde(rename = "Challenge")]
     pub challenge: Challenge,
-    /// The buyer's key, 32 bytes of x-only public key as hex — the identity the
-    /// exit derives an address from and compares with the tunnel it saw.
+    /// The buyer's key: 32 bytes of x-only public key.
+    ///
+    /// An array of numbers on the wire, not hex. Go's `encoding/json` decodes a
+    /// `[32]byte` from a JSON array of integers and refuses a string, so sending
+    /// the hex spelling the exit prints in its logs fails the whole body with
+    /// "cannot unmarshal string into Go struct field ... of type PeerKey" — which
+    /// the exit reports only as "the request body is not a purchase".
     #[serde(rename = "Buyer")]
-    pub buyer: String,
+    pub buyer: [u8; 32],
     /// 128 characters of lower-case hex: a BIP340 signature over
     /// [`Challenge::sign_digest`], made by `buyer`.
     #[serde(rename = "Sig")]
@@ -361,6 +366,46 @@ mod tests {
         let mut c = vector_challenge();
         c.issued_at = "2027-01-15T08:00:00".into();
         assert!(matches!(c.canonical(), Err(ClaimError::Canonical(_))));
+    }
+
+    #[test]
+    fn the_buyer_key_travels_as_bytes_because_go_refuses_a_hex_string() {
+        // Go declares `Buyer PeerKey` with `PeerKey [32]byte` and no custom
+        // unmarshaller, so `encoding/json` reads it from an array of integers.
+        // A hex string fails the whole body with "cannot unmarshal string into Go
+        // struct field ... of type PeerKey", which the exit surfaces only as "the
+        // request body is not a purchase" - no field name, no hint. Pinned here so
+        // the wire shape cannot drift back to the readable spelling.
+        let claim = Claim {
+            challenge: vector_challenge(),
+            buyer: [0xab; 32],
+            sig: "00".repeat(64),
+        };
+        let wire = serde_json::to_value(&claim).expect("serialise");
+        let buyer = &wire["Buyer"];
+        assert!(
+            buyer.is_array(),
+            "Buyer must be an array of numbers, got {buyer}"
+        );
+        assert_eq!(
+            buyer.as_array().expect("array").len(),
+            32,
+            "a 32-byte key is 32 numbers"
+        );
+        assert_eq!(buyer[0], 0xab, "and they are the key's bytes, in order");
+    }
+
+    #[test]
+    fn a_claim_round_trips_through_json() {
+        // What we send must be what the exit's decoder accepts and gives back.
+        let claim = Claim {
+            challenge: vector_challenge(),
+            buyer: [0x11; 32],
+            sig: "ab".repeat(64),
+        };
+        let text = serde_json::to_string(&claim).expect("serialise");
+        let back: Claim = serde_json::from_str(&text).expect("deserialise");
+        assert_eq!(back, claim);
     }
 
     #[test]
